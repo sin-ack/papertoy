@@ -19,17 +19,18 @@ Shader: *Auroras* by Nimitz - https://www.shadertoy.com/view/XtGGRt
 
 ## Dependencies
 
-- Zig master (tested version: `0.15.0-dev.1149+4e6a04929`)
-- `libwayland` (`libwayland-dev`, `dev-util/wayland` etc.)
-- `libglvnd` (`libglvnd-dev`, `media-libs/glvnd` etc.)
+You'll most likely have these installed if you have a Wayland compositor anyway.
 
-## Build
+- Debian and variants: `libwayland-client0 libwayland-egl1 libegl1 libglvnd0 libffi8`
+- Gentoo: `dev-util/wayland media-libs/glvnd dev-libs/libffi`
 
-1. Install the listed dependencies above.
-2. Clone the repository.
-3. Run `zig build -Doptimize=ReleaseFast`
+## Install
 
-The binary will be located at `zig-out/bin/papertoy`.
+Either [download the latest release](https://github.com/sin-ack/papertoy/releases/latest) or follow the [build instructions below](#build).
+
+Place `papertoy` somewhere in your `PATH` (e.g. `.local/bin`).
+
+Once I'm happy with the stability I'll probably go for system packages.
 
 ## Usage
 
@@ -40,6 +41,26 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
 
 Options:
 - `--output <id>`: Render to this Wayland output index (default: `0`)
+
+## Build
+
+### Dependencies
+
+- Zig master (tested version: `0.15.0-dev.1149+4e6a04929`)
+- `libwayland`
+  - Debian and variants: `libwayland-dev`
+  - Gentoo: `dev-util/wayland`
+- `libglvnd`
+  - Debian and variants: `libglvnd-dev`
+  - Gentoo: `media-libs/glvnd`
+
+### Steps
+
+1. Install the listed dependencies above.
+2. Clone the repository.
+3. Run `zig build -Doptimize=ReleaseFast`
+
+The binary will be located at `zig-out/bin/papertoy`.
 
 ## License
 
