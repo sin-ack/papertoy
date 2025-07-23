@@ -1,0 +1,39 @@
+name: Release new version
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.0-dev.1149+4e6a04929
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends libglvnd-dev libwayland-dev wayland-protocols
+
+      - name: Build the project and prepare binaries
+        run: |
+          mkdir out
+          zig build -Doptimize=ReleaseFast
+          cp zig-out/bin/papertoy out/papertoy-linux-x86_64
+
+      - name: Create new version as draft
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: out/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
