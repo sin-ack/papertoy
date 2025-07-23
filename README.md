@@ -3,6 +3,20 @@
 Run a Shadertoy-compatible shader as an animated wallpaper on Wayland. Requires
 running a wlroots-compatible Wayland compositor.
 
+## Showcase
+
+https://github.com/user-attachments/assets/8d6ae569-8fed-4ae5-aa11-4a3db6d13167
+
+Shader: Balatro main menu background shader *(not publicly available)*
+
+![Papertoy running the "Seascape" shader](https://github.com/user-attachments/assets/010e225e-0952-4511-a1cf-715389ebf907)
+
+Shader: *Seascape* by TDM - https://www.shadertoy.com/view/Ms2SD1
+
+![Papertoy running the "Auroras" shader](https://github.com/user-attachments/assets/6db0bcd8-7d63-4720-9596-8b14114c158b)
+
+Shader: *Auroras* by Nimitz - https://www.shadertoy.com/view/XtGGRt
+
 ## Dependencies
 
 - Zig master (tested version: `0.15.0-dev.1149+4e6a04929`)
