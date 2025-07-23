@@ -1,0 +1,28 @@
+.{
+    .name = .papertoy,
+    .fingerprint = 0xe731ea3fb305e865,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.13.0",
+    .dependencies = .{
+        .@"zig-wayland" = .{
+            // TODO: Update to the upstream URL once this change (or similar) is merged
+            .url = "https://codeberg.org/sin-ack/zig-wayland/archive/f18fef69b5f9096a667e7cb47fb96477657cdf92.tar.gz",
+            .hash = "wayland-0.4.0-dev-lQa1kjfMAQAkvyX7B4XFmdZt8w6d_OCMsee6uBJZEaFu",
+        },
+        .zgl = .{
+            // TODO: Update to the upstream URL once this change (or similar) is merged
+            .url = "https://github.com/sin-ack/zgl/archive/b3dc4c6034bdbd574a6b448626750909e51a6c33.tar.gz",
+            .hash = "zgl-1.1.0-p_NpAKE-CgBnmyP12H-ldbZLdImx1btyk8zPx0I5CGHX",
+        },
+        .@"zig-args" = .{
+            .url = "https://github.com/ikskuh/zig-args/archive/4c305bcb45fd3c4b74b7bf7f907cf3fc12f415a2.tar.gz",
+            .hash = "args-0.0.0-CiLiquDRAADuU_ueSmGquhHAuhDxxlfBokGj01ZdVYHt",
+        },
+    },
+
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
