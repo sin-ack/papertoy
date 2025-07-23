@@ -1,0 +1,30 @@
+name: Lint and build the project
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.0-dev.1149+4e6a04929
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends libglvnd-dev libwayland-dev wayland-protocols
+
+      - name: Build the project
+        run: zig build
+
+      - name: Check formatting
+        run: zig fmt --check src
