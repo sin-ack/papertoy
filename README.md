@@ -1,5 +1,7 @@
 # Papertoy
 
+[![justforfunnoreally.dev badge](https://img.shields.io/badge/justforfunnoreally-dev-9ff)](https://justforfunnoreally.dev)
+
 Run a Shadertoy-compatible shader as an animated wallpaper on Wayland. Requires
 running a wlroots-compatible Wayland compositor.
 
