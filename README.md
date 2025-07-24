@@ -39,6 +39,10 @@ Run the binary with the path to a Shadertoy shader as an argument:
 $ zig-out/bin/papertoy /path/to/shader.glsl
 ```
 
+> [!IMPORTANT]
+> Currently, only shaders that don't use any channels are supported. This is
+> being worked on.
+
 Options:
 - `--output <id>`: Render to this Wayland output index (default: `0`)
 
