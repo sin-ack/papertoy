@@ -5,3 +5,6 @@ tmp/
 
 /.zig-cache/
 /zig-out/
+
+# Nix result symlink
+/result
