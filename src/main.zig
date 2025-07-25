@@ -58,10 +58,10 @@ const Output = struct {
     scale: i32 = 1,
     /// The width of the output in pixels. This is not affected by the scale. Set by the
     /// `mode` event.
-    width: i32 = undefined,
+    width: u32 = undefined,
     /// The height of the output in pixels. This is not affected by the scale. Set by the
     /// `mode` event.
-    height: i32 = undefined,
+    height: u32 = undefined,
 
     /// Initialize the output.
     pub fn init(allocator: Allocator, output: *wl.Output) !*Output {
@@ -103,8 +103,11 @@ const Output = struct {
                 self.description = self.allocator.dupe(u8, std.mem.sliceTo(description.description, 0)) catch @panic("OOM");
             },
             .mode => |mode| {
-                self.width = mode.width;
-                self.height = mode.height;
+                if (mode.width <= 0) @panic("output width is non-positive?!");
+                if (mode.height <= 0) @panic("output height is non-positive?!");
+
+                self.width = @intCast(mode.width);
+                self.height = @intCast(mode.height);
             },
             .scale => |scale| {
                 self.scale = scale.factor;
@@ -236,7 +239,7 @@ const WlrSurface = struct {
         self.wl_surface = try compositor.createSurface();
         errdefer self.wl_surface.destroy();
 
-        self.wl_egl_window = try wl.EglWindow.create(self.wl_surface, @divFloor(output.width, output.scale), @divFloor(output.height, output.scale));
+        self.wl_egl_window = try wl.EglWindow.create(self.wl_surface, @intCast(output.width), @intCast(output.height));
         errdefer self.wl_egl_window.destroy();
 
         self.egl_surface = egl.eglCreatePlatformWindowSurface(
@@ -257,7 +260,9 @@ const WlrSurface = struct {
 
         self.wlr_surface.setListener(*WlrSurface, listener, self);
 
-        self.wlr_surface.setSize(@intCast(@divFloor(output.width, output.scale)), @intCast(@divFloor(output.height, output.scale)));
+        self.wlr_surface.setSize(output.width, output.height);
+        self.wl_surface.setBufferScale(output.scale);
+
         // TODO: Make the user set this.
         self.wlr_surface.setAnchor(.{ .top = true, .left = true });
 
@@ -489,7 +494,7 @@ pub fn main() !u8 {
 
     try surface.makeCurrent();
 
-    gl.viewport(0, 0, @intCast(@divFloor(output.width, output.scale)), @intCast(@divFloor(output.height, output.scale)));
+    gl.viewport(0, 0, output.width, output.height);
 
     const vert = gl.Shader.create(.vertex);
     defer vert.delete();
@@ -524,7 +529,7 @@ pub fn main() !u8 {
     program.link();
 
     var uniforms = Uniforms{
-        .resolution = .{ @floatFromInt(@divFloor(output.width, output.scale)), @floatFromInt(@divFloor(output.height, output.scale)), 0 },
+        .resolution = .{ @floatFromInt(output.width), @floatFromInt(output.height), 0 },
         .frame_rate = 60.0,
     };
 
