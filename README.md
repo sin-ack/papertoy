@@ -50,7 +50,16 @@ Options:
 
 ## Build
 
-### Dependencies
+### Nix
+
+1. `nix run .`
+2. There is no second step.
+
+You can add the flake to your profile with: `nix profile install github:sin-ack/papertoy/<version>`
+
+### Bare metal
+
+#### Dependencies
 
 - Zig master (tested version: `0.15.0-dev.1149+4e6a04929`)
 - `libwayland`
@@ -60,7 +69,7 @@ Options:
   - Debian and variants: `libglvnd-dev`
   - Gentoo: `media-libs/glvnd`
 
-### Steps
+#### Steps
 
 1. Install the listed dependencies above.
 2. Clone the repository.
