@@ -225,9 +225,19 @@ const WlrSurface = struct {
     /// The EGL surface created for the window.
     egl_surface: egl.EGLSurface,
 
+    // --- State ---
+    /// The current width of the surface.
+    width: u32 = undefined,
+    /// The current height of the surface.
+    height: u32 = undefined,
+    /// The current scale of the surface buffer.
+    scale: u32 = undefined,
+
     // --- Wayland Core ---
     /// The Wayland EGL window.
     wl_egl_window: *wl.EglWindow,
+    /// The output associated with this surface.
+    output: *Output,
     /// The Wayland surface.
     wl_surface: *wl.Surface,
 
@@ -241,6 +251,12 @@ const WlrSurface = struct {
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
+        self.output = output;
+
+        self.width = output.width;
+        self.height = output.height;
+        self.scale = output.scale;
+
         try self.initEgl(display);
         errdefer {
             _ = egl.eglDestroySurface(self.egl_display, self.egl_surface);
@@ -250,7 +266,7 @@ const WlrSurface = struct {
         self.wl_surface = try compositor.createSurface();
         errdefer self.wl_surface.destroy();
 
-        self.wl_egl_window = try wl.EglWindow.create(self.wl_surface, @intCast(output.width), @intCast(output.height));
+        self.wl_egl_window = try wl.EglWindow.create(self.wl_surface, @intCast(self.width), @intCast(self.height));
         errdefer self.wl_egl_window.destroy();
 
         self.egl_surface = egl.eglCreatePlatformWindowSurface(
@@ -271,8 +287,8 @@ const WlrSurface = struct {
 
         self.wlr_surface.setListener(*WlrSurface, listener, self);
 
-        self.wlr_surface.setSize(output.width, output.height);
-        self.wl_surface.setBufferScale(output.scale);
+        self.wlr_surface.setSize(self.width, self.height);
+        self.wl_surface.setBufferScale(self.scale);
 
         // TODO: Make the user set this.
         self.wlr_surface.setAnchor(.{ .top = true, .left = true });
@@ -321,6 +337,32 @@ const WlrSurface = struct {
     /// frame.
     fn requestAnimationFrame(self: *WlrSurface) !*wl.Callback {
         return self.wl_surface.frame();
+    }
+
+    /// Synchronize changes in the output size and scale with the surface.
+    /// Returns whether any changes were applied.
+    pub fn synchronizeOutputChanges(self: *WlrSurface, display: *wl.Display) !bool {
+        try self.output.wait(display);
+
+        const width_changed = self.output.width != self.width;
+        const height_changed = self.output.height != self.height;
+        const scale_changed = self.output.scale != self.scale;
+
+        if (!width_changed and !height_changed and !scale_changed) {
+            // No changes to apply.
+            return false;
+        }
+
+        self.width = self.output.width;
+        self.height = self.output.height;
+        self.scale = self.output.scale;
+
+        self.wl_surface.setBufferScale(@intCast(self.scale));
+        self.wlr_surface.setSize(self.width, self.height);
+        self.wl_egl_window.resize(@intCast(self.width), @intCast(self.height), 0, 0);
+
+        self.wl_surface.commit();
+        return true;
     }
 
     /// Initialize EGL.
@@ -505,8 +547,6 @@ pub fn main() !u8 {
 
     try surface.makeCurrent();
 
-    gl.viewport(0, 0, output.width, output.height);
-
     const vert = gl.Shader.create(.vertex);
     defer vert.delete();
     vert.source(1, &.{vs_source[0..]});
@@ -540,7 +580,6 @@ pub fn main() !u8 {
     program.link();
 
     var uniforms = Uniforms{
-        .resolution = .{ @floatFromInt(output.width), @floatFromInt(output.height), 0 },
         .frame_rate = 60.0,
     };
 
@@ -591,6 +630,11 @@ pub fn main() !u8 {
     var frame: usize = 0;
 
     while (true) {
+        if (try surface.synchronizeOutputChanges(display)) {
+            uniforms.resolution = .{ @floatFromInt(surface.width), @floatFromInt(surface.height), 0 };
+            gl.viewport(0, 0, surface.width, surface.height);
+        }
+
         // For the first frame, we want to render immediately.
         if (frame > 0 and display.dispatch() != .SUCCESS) return error.DispatchFailed;
 
