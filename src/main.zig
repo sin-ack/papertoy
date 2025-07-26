@@ -18,6 +18,7 @@ const egl = @cImport({
 });
 
 const wl = wayland.client.wl;
+const wp = wayland.client.wp;
 const zwlr = wayland.client.zwlr;
 
 pub const opengl_error_handling = .assert;
@@ -55,8 +56,10 @@ const Output = struct {
     name: []const u8 = undefined,
     /// The human-friendly description of the output. Set by the `description` event.
     description: ?[]const u8 = null,
-    /// The scale of this output. Defaults to 1. Set by the `scale` event.
-    scale: i32 = 1,
+    /// The scale of this output. Defaults to 1. This only determines the scale of the
+    /// output in the compositor, not the scale of the rendered content (which is
+    /// determined by the `fractional_scale` object, if available). Set by the `scale` event.
+    scale: u32 = 1,
     /// The width of the output in pixels. This is not affected by the scale. Set by the
     /// `mode` event.
     width: u32 = undefined,
@@ -117,7 +120,10 @@ const Output = struct {
             },
             .scale => |scale| {
                 self.ready = false;
-                self.scale = scale.factor;
+
+                if (scale.factor <= 0) @panic("output scale factor is non-positive?!");
+
+                self.scale = @intCast(scale.factor);
             },
             .done => {
                 self.ready = true;
@@ -144,6 +150,8 @@ const RegistryListener = struct {
     // Protocol objects
     compositor: ?*wl.Compositor,
     layer_shell_v1: ?*zwlr.LayerShellV1,
+    fractional_scale_manager_v1: ?*wp.FractionalScaleManagerV1,
+    viewporter_v1: ?*wp.Viewporter,
 
     /// The outputs currently available.
     outputs: std.ArrayListUnmanaged(*Output),
@@ -156,6 +164,7 @@ const RegistryListener = struct {
     /// Deinitialize the registry listener.
     pub fn deinit(self: *RegistryListener) void {
         if (self.layer_shell_v1) |layer_shell_v1| layer_shell_v1.destroy();
+        if (self.fractional_scale_manager_v1) |fractional_scale_manager_v1| fractional_scale_manager_v1.destroy();
 
         for (self.outputs.items) |output| {
             output.destroy();
@@ -172,6 +181,10 @@ const RegistryListener = struct {
                     self.compositor = registry.bind(global.name, wl.Compositor, 4) catch return;
                 } else if (std.mem.orderZ(u8, global.interface, zwlr.LayerShellV1.interface.name) == .eq) {
                     self.layer_shell_v1 = registry.bind(global.name, zwlr.LayerShellV1, 1) catch return;
+                } else if (std.mem.orderZ(u8, global.interface, wp.FractionalScaleManagerV1.interface.name) == .eq) {
+                    self.fractional_scale_manager_v1 = registry.bind(global.name, wp.FractionalScaleManagerV1, 1) catch return;
+                } else if (std.mem.orderZ(u8, global.interface, wp.Viewporter.interface.name) == .eq) {
+                    self.viewporter_v1 = registry.bind(global.name, wp.Viewporter, 1) catch return;
                 }
 
                 // Outputs
@@ -232,6 +245,10 @@ const WlrSurface = struct {
     height: u32 = undefined,
     /// The current scale of the surface buffer.
     scale: u32 = undefined,
+    /// The destination width of the surface after applying any scaling necessary for the output.
+    destination_width: u32 = undefined,
+    /// The destination height of the surface after applying any scaling necessary for the output.
+    destination_height: u32 = undefined,
 
     // --- Wayland Core ---
     /// The Wayland EGL window.
@@ -241,12 +258,20 @@ const WlrSurface = struct {
     /// The Wayland surface.
     wl_surface: *wl.Surface,
 
+    // --- Fractional scale handling ---
+    /// The fractional scale object associated with the wl_surface. If the compositor does not
+    /// support fractional scaling, this will be null.
+    fractional_scale: ?*FractionalScale,
+    /// The viewport associated with the wl_surface. This is used to scale the surface back to
+    /// native size in a fractionally-scaled output.
+    viewport: ?*wp.Viewport,
+
     // --- wlroots Layer Shell ---
     /// The wlroots surface.
     wlr_surface: *zwlr.LayerSurfaceV1,
 
     /// Create a wlroots surface with EGL for GPU rendering.
-    pub fn createEgl(allocator: Allocator, display: *wl.Display, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, output: *Output) !*WlrSurface {
+    pub fn createEgl(allocator: Allocator, display: *wl.Display, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output) !*WlrSurface {
         const self = try allocator.create(WlrSurface);
         errdefer allocator.destroy(self);
 
@@ -256,6 +281,8 @@ const WlrSurface = struct {
         self.width = output.width;
         self.height = output.height;
         self.scale = output.scale;
+        self.destination_width = output.width;
+        self.destination_height = output.height;
 
         try self.initEgl(display);
         errdefer {
@@ -288,10 +315,21 @@ const WlrSurface = struct {
         self.wlr_surface.setListener(*WlrSurface, listener, self);
 
         self.wlr_surface.setSize(self.width, self.height);
-        self.wl_surface.setBufferScale(self.scale);
+        self.wl_surface.setBufferScale(@intCast(self.scale));
 
         // TODO: Make the user set this.
         self.wlr_surface.setAnchor(.{ .top = true, .left = true });
+
+        if (fractional_scale_manager) |manager| {
+            self.fractional_scale = try FractionalScale.create(allocator, manager, self.wl_surface);
+            self.viewport = try viewporter.?.getViewport(self.wl_surface);
+        } else {
+            // No fractional scale manager available for the current compositor.
+            std.log.warn("No fractional scale manager available, using output scale instead", .{});
+            self.fractional_scale = null;
+            self.viewport = null;
+        }
+        errdefer if (self.fractional_scale) |scale| scale.destroy(allocator);
 
         // Roundtrip once to sync the configuration.
         self.wl_surface.commit();
@@ -304,6 +342,8 @@ const WlrSurface = struct {
     pub fn deinit(self: *WlrSurface) void {
         _ = egl.eglDestroyContext(self.egl_display, self.egl_context);
         _ = egl.eglTerminate(self.egl_display);
+        if (self.fractional_scale) |scale| scale.destroy(self.allocator);
+        if (self.viewport) |viewport| viewport.destroy();
         self.allocator.destroy(self);
     }
 
@@ -344,11 +384,20 @@ const WlrSurface = struct {
     pub fn synchronizeOutputChanges(self: *WlrSurface, display: *wl.Display) !bool {
         try self.output.wait(display);
 
+        var destination_width = self.output.width;
+        var destination_height = self.output.height;
+        if (self.fractional_scale) |scale| {
+            destination_width = scale.scaleSize(destination_width);
+            destination_height = scale.scaleSize(destination_height);
+        }
+
         const width_changed = self.output.width != self.width;
         const height_changed = self.output.height != self.height;
         const scale_changed = self.output.scale != self.scale;
+        const destination_width_changed = destination_width != self.destination_width;
+        const destination_height_changed = destination_height != self.destination_height;
 
-        if (!width_changed and !height_changed and !scale_changed) {
+        if (!width_changed and !height_changed and !scale_changed and !destination_width_changed and !destination_height_changed) {
             // No changes to apply.
             return false;
         }
@@ -356,10 +405,19 @@ const WlrSurface = struct {
         self.width = self.output.width;
         self.height = self.output.height;
         self.scale = self.output.scale;
+        self.destination_width = destination_width;
+        self.destination_height = destination_height;
 
         self.wl_surface.setBufferScale(@intCast(self.scale));
         self.wlr_surface.setSize(self.width, self.height);
         self.wl_egl_window.resize(@intCast(self.width), @intCast(self.height), 0, 0);
+        std.log.debug("Surface resized to ({}, {}) with scale {}", .{ self.width, self.height, self.scale });
+
+        if (self.viewport) |viewport| {
+            viewport.setSource(.fromInt(0), .fromInt(0), .fromInt(@intCast(self.width)), .fromInt(@intCast(self.height)));
+            viewport.setDestination(@intCast(self.destination_width), @intCast(self.destination_height));
+            std.log.debug("Viewport set to source: ({}, {}, {}, {}), destination: ({}, {})", .{ 0, 0, self.width, self.height, self.destination_width, self.destination_height });
+        }
 
         self.wl_surface.commit();
         return true;
@@ -445,6 +503,56 @@ const WlrSurface = struct {
     }
 };
 
+/// A fractional scale object, getting the fractional scale for a Wayland surface.
+/// The surface must live at least as long as the fractional scale object.
+const FractionalScale = struct {
+    /// The Wayland fractional scale object.
+    fractional_scale: *wp.FractionalScaleV1,
+
+    /// The preferred scale, set by the `preferred_scale` event, in 120ths.
+    preferred_scale: u32 = undefined,
+    /// Whether an initial `preferred_scale` event has been received.
+    ready: bool = false,
+
+    /// Create a new fractional scale object.
+    pub fn create(allocator: Allocator, manager: *wp.FractionalScaleManagerV1, surface: *wl.Surface) !*FractionalScale {
+        const self = try allocator.create(FractionalScale);
+        errdefer allocator.destroy(self);
+
+        self.fractional_scale = try manager.getFractionalScale(surface);
+        self.fractional_scale.setListener(*FractionalScale, listener, self);
+
+        return self;
+    }
+
+    /// Destroy the fractional scale object and free its resources.
+    pub fn destroy(self: *FractionalScale, allocator: Allocator) void {
+        self.fractional_scale.destroy();
+        allocator.destroy(self);
+    }
+
+    /// Scale the given size by the preferred scale. If no preferred scale has been set yet,
+    /// this will return the original size.
+    pub fn scaleSize(self: *FractionalScale, size: u32) u32 {
+        return if (self.ready)
+            (size * 120) / self.preferred_scale
+        else
+            size;
+    }
+
+    /// The listener callback. This should be passed to `wp.FractionalScaleV1.setListener`.
+    fn listener(fractional_scale: *wp.FractionalScaleV1, event: wp.FractionalScaleV1.Event, self: *FractionalScale) void {
+        _ = fractional_scale;
+
+        switch (event) {
+            .preferred_scale => |preferred_scale| {
+                self.preferred_scale = preferred_scale.scale;
+                self.ready = true;
+            },
+        }
+    }
+};
+
 const vs_source =
     \\#version 430 core
     \\
@@ -524,6 +632,8 @@ pub fn main() !u8 {
         .display = display,
         .compositor = null,
         .layer_shell_v1 = null,
+        .fractional_scale_manager_v1 = null,
+        .viewporter_v1 = null,
         .outputs = .{},
     };
     defer registry_listener.deinit();
@@ -542,7 +652,7 @@ pub fn main() !u8 {
     // TODO: Support multiple outputs at once.
     const output = registry_listener.outputs.items[options.options.output];
 
-    const surface = try WlrSurface.createEgl(allocator, display, compositor, layer_shell, output);
+    const surface = try WlrSurface.createEgl(allocator, display, compositor, layer_shell, registry_listener.fractional_scale_manager_v1, registry_listener.viewporter_v1, output);
     defer surface.deinit();
 
     try surface.makeCurrent();
@@ -580,6 +690,7 @@ pub fn main() !u8 {
     program.link();
 
     var uniforms = Uniforms{
+        .resolution = .{ @floatFromInt(output.width), @floatFromInt(output.height), 0 },
         .frame_rate = 60.0,
     };
 

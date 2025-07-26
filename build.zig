@@ -10,11 +10,15 @@ pub fn build(b: *std.Build) void {
     const wayland = b.createModule(.{ .root_source_file = scanner.result });
 
     scanner.addSystemProtocol("stable/xdg-shell/xdg-shell.xml");
+    scanner.addSystemProtocol("staging/fractional-scale/fractional-scale-v1.xml");
+    scanner.addSystemProtocol("stable/viewporter/viewporter.xml");
     scanner.addCustomProtocol(b.path("protocols/wlr-layer-shell-unstable-v1.xml"));
     scanner.generate("wl_compositor", 4);
     scanner.generate("wl_output", 4);
     scanner.generate("wl_shm", 1);
     scanner.generate("zwlr_layer_shell_v1", 1);
+    scanner.generate("wp_fractional_scale_manager_v1", 1);
+    scanner.generate("wp_viewporter", 1);
 
     const zgl = b.dependency("zgl", .{
         .target = target,
