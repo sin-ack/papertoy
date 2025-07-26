@@ -64,8 +64,8 @@ const Output = struct {
     /// `mode` event.
     height: u32 = undefined,
 
-    /// Initialize the output.
-    pub fn init(allocator: Allocator, output: *wl.Output) !*Output {
+    /// Create a new output object.
+    pub fn create(allocator: Allocator, output: *wl.Output) !*Output {
         const self = try allocator.create(Output);
         errdefer allocator.destroy(self);
 
@@ -84,8 +84,8 @@ const Output = struct {
         self.handle(output, event);
     }
 
-    /// Deinitialize the output.
-    pub fn deinit(self: *Output) void {
+    /// Destroy the output object and free its resources.
+    pub fn destroy(self: *Output) void {
         self.allocator.free(self.name);
         if (self.description) |description| self.allocator.free(description);
         self.allocator.destroy(self);
@@ -158,7 +158,7 @@ const RegistryListener = struct {
         if (self.layer_shell_v1) |layer_shell_v1| layer_shell_v1.destroy();
 
         for (self.outputs.items) |output| {
-            output.deinit();
+            output.destroy();
         }
         self.outputs.deinit(self.allocator);
     }
@@ -192,8 +192,8 @@ const RegistryListener = struct {
     }
 
     fn addOutput(self: *RegistryListener, wl_output: *wl.Output) !void {
-        const output = try Output.init(self.allocator, wl_output);
-        errdefer output.deinit();
+        const output = try Output.create(self.allocator, wl_output);
+        errdefer output.destroy();
 
         try output.wait(self.display);
         try self.outputs.append(self.allocator, output);
@@ -202,7 +202,7 @@ const RegistryListener = struct {
     fn removeOutput(self: *RegistryListener, id: c_uint) bool {
         for (self.outputs.items, 0..) |item, i| {
             if (item.getId() == id) {
-                item.deinit();
+                item.destroy();
                 self.outputs.orderedRemove(i);
                 return true;
             }
