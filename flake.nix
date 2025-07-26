@@ -32,6 +32,11 @@
       wayland-protocols
       wayland-scanner
     ];
+
+    appDeps = zigBuildDeps ++ (with env.pkgs; [
+      wayland
+      libglvnd
+    ]);
   in
     with env.pkgs.lib; rec {
       # Produces clean binaries meant to be ship'd outside of nix
@@ -76,10 +81,10 @@
       };
 
       # nix run .
-      apps.default = env.app zigBuildDeps "zig build run -- \"$@\"";
+      apps.default = env.app appDeps "zig build run -- \"$@\"";
 
       # nix run .#build
-      apps.build = env.app zigBuildDeps "zig build \"$@\"";
+      apps.build = env.app appDeps "zig build \"$@\"";
 
       # nix run .#zig2nix
       apps.zig2nix = env.app zigBuildDeps "zig2nix \"$@\"";
