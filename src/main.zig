@@ -45,7 +45,8 @@ const Output = struct {
 
     /// The Wayland object representing the output.
     output: *wl.Output,
-    /// Whether the `done` event has been received.
+    /// Whether the `done` event has been received. This flag is cleared if any property
+    /// is updated until the compositor sends the `done` event again.
     ready: bool = false,
 
     /// The ID of the output.
@@ -96,13 +97,18 @@ const Output = struct {
 
         switch (event) {
             .name => |name| {
+                // FIXME: Correctly deallocate the previous name.
+                self.ready = false;
                 self.name = self.allocator.dupe(u8, std.mem.sliceTo(name.name, 0)) catch @panic("OOM");
             },
             .description => |description| {
                 if (self.description) |d| self.allocator.free(d);
+                self.ready = false;
                 self.description = self.allocator.dupe(u8, std.mem.sliceTo(description.description, 0)) catch @panic("OOM");
             },
             .mode => |mode| {
+                self.ready = false;
+
                 if (mode.width <= 0) @panic("output width is non-positive?!");
                 if (mode.height <= 0) @panic("output height is non-positive?!");
 
@@ -110,12 +116,20 @@ const Output = struct {
                 self.height = @intCast(mode.height);
             },
             .scale => |scale| {
+                self.ready = false;
                 self.scale = scale.factor;
             },
             .done => {
                 self.ready = true;
             },
             .geometry => {},
+        }
+    }
+
+    /// Roundtrip the display until this output is ready.
+    pub fn wait(self: *Output, display: *wl.Display) !void {
+        while (!self.ready) {
+            if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
         }
     }
 };
@@ -181,10 +195,7 @@ const RegistryListener = struct {
         const output = try Output.init(self.allocator, wl_output);
         errdefer output.deinit();
 
-        while (!output.ready) {
-            if (self.display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
-        }
-
+        try output.wait(self.display);
         try self.outputs.append(self.allocator, output);
     }
 
