@@ -66,6 +66,9 @@ const Output = struct {
     /// The height of the output in pixels. This is not affected by the scale. Set by the
     /// `mode` event.
     height: u32 = undefined,
+    /// The refresh rate of the output in Hz (informative, not used for rendering).
+    /// We pass it down to the shader in case it wants to use it.
+    refresh_rate: u32 = undefined,
 
     /// Create a new output object.
     pub fn create(allocator: Allocator, output: *wl.Output) !*Output {
@@ -114,9 +117,11 @@ const Output = struct {
 
                 if (mode.width <= 0) @panic("output width is non-positive?!");
                 if (mode.height <= 0) @panic("output height is non-positive?!");
+                if (mode.refresh <= 0) @panic("output refresh rate is non-positive?!");
 
                 self.width = @intCast(mode.width);
                 self.height = @intCast(mode.height);
+                self.refresh_rate = @intCast(mode.refresh);
             },
             .scale => |scale| {
                 self.ready = false;
@@ -566,6 +571,7 @@ const shadertoy_preamble = @embedFile("shadertoy_preamble.glsl");
 
 const Options = struct {
     output: u32 = 0,
+    @"frame-rate": ?u32 = null,
     help: bool = false,
 };
 
@@ -585,6 +591,7 @@ pub fn printUsage() !void {
         \\                    fragment shader that is compatible with the Shadertoy API.
         \\Options:
         \\  --output <index>  Specify the output index to render to (default: 0)
+        \\  --frame-rate <fps> Set a custom frame rate for the shader (default: vsync)
         \\  --help            Show this help message
         \\
     );
@@ -689,9 +696,20 @@ pub fn main() !u8 {
     program.attach(frag);
     program.link();
 
+    var using_custom_frame_rate = false;
+    var target_frame_rate = output.refresh_rate;
+    if (options.options.@"frame-rate") |frame_rate| {
+        using_custom_frame_rate = true;
+        if (frame_rate <= 0) {
+            std.log.err("frame rate must be positive, got {}", .{frame_rate});
+            return 1;
+        }
+        target_frame_rate = @intCast(frame_rate);
+    }
+
     var uniforms = Uniforms{
         .resolution = .{ @floatFromInt(output.width), @floatFromInt(output.height), 0 },
-        .frame_rate = 60.0,
+        .frame_rate = @floatFromInt(target_frame_rate),
     };
 
     const vao = gl.VertexArray.create();
@@ -735,8 +753,11 @@ pub fn main() !u8 {
         }, .static_draw);
     }
 
+    const expected_frame_time_ns = @as(u64, std.time.ns_per_s) / target_frame_rate;
+
     const first_frame_time = try std.time.Instant.now();
     var last_frame_time = first_frame_time;
+    var next_frame_time: u64 = 0;
     var render_frame = true;
     var frame: usize = 0;
 
@@ -746,23 +767,43 @@ pub fn main() !u8 {
             gl.viewport(0, 0, surface.width, surface.height);
         }
 
-        // For the first frame, we want to render immediately.
-        if (frame > 0 and display.dispatch() != .SUCCESS) return error.DispatchFailed;
+        const now = try std.time.Instant.now();
+        const now_ns = (@as(u64, @intCast(now.timestamp.sec)) * std.time.ns_per_s) + @as(u64, @intCast(now.timestamp.nsec));
 
-        if (!render_frame) continue;
-        render_frame = false;
+        // For the first frame, we want to render immediately.
+        if (frame > 0) {
+            if (using_custom_frame_rate) {
+                // NOTE: dispatchPending because we don't want to block on a
+                //       non-existent frame event.
+                if (display.dispatchPending() != .SUCCESS) return error.DispatchFailed;
+
+                if (now_ns < next_frame_time) {
+                    // If we are ahead of the target frame rate, sleep until the next frame time.
+                    std.posix.nanosleep(0, next_frame_time - now_ns);
+                    continue;
+                }
+            } else {
+                if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
+
+                if (!render_frame) continue;
+                render_frame = false;
+            }
+        }
+
         frame += 1;
 
-        const callback = try surface.requestAnimationFrame();
-        callback.setListener(*bool, setRenderFrame, &render_frame);
+        if (!using_custom_frame_rate) {
+            const callback = try surface.requestAnimationFrame();
+            callback.setListener(*bool, setRenderFrame, &render_frame);
+        }
 
-        const now = try std.time.Instant.now();
         const since_ns: f32 = @floatFromInt(now.since(first_frame_time));
         const delta_ns: f32 = @floatFromInt(now.since(last_frame_time));
         uniforms.time = since_ns / std.time.ns_per_s;
         uniforms.time_delta = delta_ns / std.time.ns_per_s;
         uniforms.frame = @intCast(frame);
         last_frame_time = now;
+        next_frame_time = now_ns + expected_frame_time_ns;
 
         program.use();
         vao.bind();
