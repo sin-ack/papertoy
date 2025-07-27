@@ -254,6 +254,9 @@ const WlrSurface = struct {
     destination_width: u32 = undefined,
     /// The destination height of the surface after applying any scaling necessary for the output.
     destination_height: u32 = undefined,
+    /// The custom resolution to use for the surface set by the user. If set,
+    /// overrides the output resolution.
+    custom_resolution: ?Resolution = null,
 
     // --- Wayland Core ---
     /// The Wayland EGL window.
@@ -276,7 +279,7 @@ const WlrSurface = struct {
     wlr_surface: *zwlr.LayerSurfaceV1,
 
     /// Create a wlroots surface with EGL for GPU rendering.
-    pub fn createEgl(allocator: Allocator, display: *wl.Display, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output) !*WlrSurface {
+    pub fn createEgl(allocator: Allocator, display: *wl.Display, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
         const self = try allocator.create(WlrSurface);
         errdefer allocator.destroy(self);
 
@@ -288,6 +291,12 @@ const WlrSurface = struct {
         self.scale = output.scale;
         self.destination_width = output.width;
         self.destination_height = output.height;
+        self.custom_resolution = custom_resolution;
+
+        if (custom_resolution) |resolution| {
+            self.width = resolution.width;
+            self.height = resolution.height;
+        }
 
         try self.initEgl(display);
         errdefer {
@@ -389,29 +398,36 @@ const WlrSurface = struct {
     pub fn synchronizeOutputChanges(self: *WlrSurface, display: *wl.Display) !bool {
         try self.output.wait(display);
 
-        var destination_width = self.output.width;
-        var destination_height = self.output.height;
-        if (self.fractional_scale) |scale| {
-            destination_width = scale.scaleSize(destination_width);
-            destination_height = scale.scaleSize(destination_height);
+        var expected_width = self.output.width;
+        var expected_height = self.output.height;
+        if (self.custom_resolution) |resolution| {
+            expected_width = resolution.width;
+            expected_height = resolution.height;
         }
 
-        const width_changed = self.output.width != self.width;
-        const height_changed = self.output.height != self.height;
+        var expected_destination_width = self.output.width;
+        var expected_destination_height = self.output.height;
+        if (self.fractional_scale) |scale| {
+            expected_destination_width = scale.scaleSize(expected_destination_width);
+            expected_destination_height = scale.scaleSize(expected_destination_height);
+        }
+
+        const width_changed = expected_width != self.width;
+        const height_changed = expected_height != self.height;
         const scale_changed = self.output.scale != self.scale;
-        const destination_width_changed = destination_width != self.destination_width;
-        const destination_height_changed = destination_height != self.destination_height;
+        const destination_width_changed = expected_destination_width != self.destination_width;
+        const destination_height_changed = expected_destination_height != self.destination_height;
 
         if (!width_changed and !height_changed and !scale_changed and !destination_width_changed and !destination_height_changed) {
             // No changes to apply.
             return false;
         }
 
-        self.width = self.output.width;
-        self.height = self.output.height;
+        self.width = expected_width;
+        self.height = expected_height;
         self.scale = self.output.scale;
-        self.destination_width = destination_width;
-        self.destination_height = destination_height;
+        self.destination_width = expected_destination_width;
+        self.destination_height = expected_destination_height;
 
         self.wl_surface.setBufferScale(@intCast(self.scale));
         self.wlr_surface.setSize(self.width, self.height);
@@ -569,9 +585,15 @@ const vs_source =
 ;
 const shadertoy_preamble = @embedFile("shadertoy_preamble.glsl");
 
+const Resolution = struct {
+    width: u32,
+    height: u32,
+};
+
 const Options = struct {
     output: u32 = 0,
     @"frame-rate": ?u32 = null,
+    resolution: ?[]const u8 = null,
     help: bool = false,
 };
 
@@ -592,6 +614,7 @@ pub fn printUsage() !void {
         \\Options:
         \\  --output <index>  Specify the output index to render to (default: 0)
         \\  --frame-rate <fps> Set a custom frame rate for the shader (default: vsync)
+        \\  --resolution <WxH> Set the resolution of the shader (default: output resolution)
         \\  --help            Show this help message
         \\
     );
@@ -629,6 +652,34 @@ pub fn main() !u8 {
     }
     const shader_path = options.positionals[0];
 
+    var custom_resolution: ?Resolution = null;
+    if (options.options.resolution) |resolution| {
+        var it = std.mem.splitScalar(u8, resolution, 'x');
+        const width_str = it.next() orelse {
+            std.log.err("resolution must be in the format WxH, got: {s}", .{resolution});
+            return 1;
+        };
+        const height_str = it.next() orelse {
+            std.log.err("resolution must be in the format WxH, got: {s}", .{resolution});
+            return 1;
+        };
+        if (it.next() != null) {
+            std.log.err("resolution must be in the format WxH, got: {s}", .{resolution});
+            return 1;
+        }
+
+        custom_resolution = .{
+            .width = std.fmt.parseInt(u32, width_str, 10) catch |err| {
+                std.log.err("failed to parse width from resolution: {s} ({})", .{ width_str, err });
+                return 1;
+            },
+            .height = std.fmt.parseInt(u32, height_str, 10) catch |err| {
+                std.log.err("failed to parse height from resolution: {s} ({})", .{ height_str, err });
+                return 1;
+            },
+        };
+    }
+
     // TODO: Investigate all try uses below and make them return a user-friendly error.
 
     const display = try wl.Display.connect(null);
@@ -659,7 +710,7 @@ pub fn main() !u8 {
     // TODO: Support multiple outputs at once.
     const output = registry_listener.outputs.items[options.options.output];
 
-    const surface = try WlrSurface.createEgl(allocator, display, compositor, layer_shell, registry_listener.fractional_scale_manager_v1, registry_listener.viewporter_v1, output);
+    const surface = try WlrSurface.createEgl(allocator, display, compositor, layer_shell, registry_listener.fractional_scale_manager_v1, registry_listener.viewporter_v1, output, custom_resolution);
     defer surface.deinit();
 
     try surface.makeCurrent();
