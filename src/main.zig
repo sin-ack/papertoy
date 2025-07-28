@@ -738,6 +738,21 @@ pub fn main() !u8 {
 
         frag.source(2, &.{ shadertoy_preamble[0..], fs_file });
         frag.compile();
+        const frag_compiled = frag.get(.compile_status) == gl.binding.TRUE;
+        if (!frag_compiled) {
+            const log = try frag.getCompileLog(allocator);
+            defer allocator.free(log);
+
+            std.log.err(
+                \\failed to compile shader!
+                \\This might mean the shader is broken, or that it uses features of GLSL
+                \\that are beyond 3.30 core.
+                \\
+                \\Shader log:
+                \\{s}
+            , .{log});
+            return 1;
+        }
     }
 
     const program = gl.Program.create();
