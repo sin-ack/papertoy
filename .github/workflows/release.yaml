@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 jobs:
-  run-tests:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -14,20 +14,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.0-dev.1149+4e6a04929
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Install system dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y --no-install-recommends libglvnd-dev libwayland-dev wayland-protocols
+      - name: Setup Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
 
-      - name: Build the project and prepare binaries
+      # NOTE: We need this because otherwise the build fails with:
+      #
+      #    bwrap: setting up uid map: Permission denied
+      - name: Disable AppArmor unprivileged userns restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build the project
+        run: nix build .
+
+      - name: Prepare binaries for release
         run: |
           mkdir out
-          zig build -Doptimize=ReleaseFast
           cp zig-out/bin/papertoy out/papertoy-linux-x86_64
 
       - name: Create new version as draft
