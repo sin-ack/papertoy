@@ -27,12 +27,12 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Build the project
-        run: nix build .
+        run: nix build '.#foreign'
 
       - name: Prepare binaries for release
         run: |
           mkdir out
-          cp zig-out/bin/papertoy out/papertoy-linux-x86_64
+          cp result/bin/papertoy out/papertoy-linux-x86_64
 
       - name: Create new version as draft
         uses: softprops/action-gh-release@v2
