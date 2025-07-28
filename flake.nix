@@ -4,13 +4,21 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
 
-    zig2nix.url = "github:Cloudef/zig2nix";
-    zig2nix.inputs.nixpkgs.follows = "nixpkgs";
+    zig2nix = {
+      url = "github:Cloudef/zig2nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    alejandra = {
+      url = "github:kamadorueda/alejandra/4.0.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
     zig2nix,
     nixpkgs,
+    alejandra,
     ...
   }: let
     flake-utils = zig2nix.inputs.flake-utils;
@@ -33,10 +41,12 @@
       wayland-scanner
     ];
 
-    appDeps = zigBuildDeps ++ (with env.pkgs; [
-      wayland
-      libglvnd
-    ]);
+    appDeps =
+      zigBuildDeps
+      ++ (with env.pkgs; [
+        wayland
+        libglvnd
+      ]);
   in
     with env.pkgs.lib; rec {
       # Produces clean binaries meant to be ship'd outside of nix
@@ -89,6 +99,15 @@
       # nix run .#zig2nix
       apps.zig2nix = env.app zigBuildDeps "zig2nix \"$@\"";
 
+      # nix run .#format
+      apps.format =
+        env.app [
+          alejandra.defaultPackage.${system}
+        ] ''
+          alejandra ./flake.nix
+          zig fmt .
+        '';
+
       # nix develop
       devShells.default = env.mkShell {
         # Packages required for compiling, linking and running
@@ -99,6 +118,28 @@
           ++ packages.default.buildInputs
           ++ packages.default.zigWrapperBins
           ++ packages.default.zigWrapperLibs;
+      };
+
+      checks.nix-format = pkgs.stdenv.mkDerivation {
+        name = "nix-format";
+        src = ./flake.nix;
+        nativeBuildInputs = [alejandra.defaultPackage.${system}];
+        phases = ["buildPhase"];
+        buildPhase = ''
+          mkdir -p $out
+          ${pkgs.lib.getExe alejandra.defaultPackage.${system}} --check ${./flake.nix}
+        '';
+      };
+      checks.zig-format = pkgs.stdenv.mkDerivation {
+        name = "zig-format";
+        nativeBuildInputs = [
+          env.zig
+        ];
+        phases = ["buildPhase"];
+        buildPhase = ''
+          mkdir -p $out
+          ${pkgs.lib.getExe env.zig} fmt --check .
+        '';
       };
     }));
 }
