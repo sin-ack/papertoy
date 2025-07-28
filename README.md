@@ -47,6 +47,8 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
 
 Options:
 - `--output <id>`: Render to this Wayland output index (default: `0`)
+- `--frame-rate <fps>`: Limit the frame rate of the shader (default: output refresh rate)
+- `--resolution <WxH>`: Limit the resolution the shader is rendered at (default: output native resolution)
 
 ## Build
 
