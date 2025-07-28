@@ -7,24 +7,26 @@ on:
     branches: [master]
 
 jobs:
-  run-tests:
+  lint-and-build:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.15.0-dev.1149+4e6a04929
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Install system dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y --no-install-recommends libglvnd-dev libwayland-dev wayland-protocols
+      - name: Setup Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # NOTE: We need this because otherwise the build fails with:
+      #
+      #    bwrap: setting up uid map: Permission denied
+      - name: Disable AppArmor unprivileged userns restriction
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Build the project
-        run: zig build
+        run: nix build .
 
-      - name: Check formatting
-        run: zig fmt --check src
+      - name: Run checks
+        run: nix flake check
