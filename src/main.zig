@@ -612,10 +612,10 @@ pub fn printUsage() !void {
         \\  SHADER_FILE       The path to the shader file to render. This should be a GLSL
         \\                    fragment shader that is compatible with the Shadertoy API.
         \\Options:
-        \\  --output <index>  Specify the output index to render to (default: 0)
+        \\  --output <index>   Specify the output index to render to (default: 0)
         \\  --frame-rate <fps> Set a custom frame rate for the shader (default: vsync)
         \\  --resolution <WxH> Set the resolution of the shader (default: output resolution)
-        \\  --help            Show this help message
+        \\  --help             Show this help message
         \\
     );
 }
