@@ -61,8 +61,6 @@
         buildInputs = with env.pkgs; [
           wayland
           libglvnd
-          # Required to run under NixOS.
-          autoPatchelfHook
         ];
 
         # We're linking against stuff like libwayland-client.so so we need the system
@@ -72,7 +70,12 @@
 
       # nix build .
       packages.default = packages.foreign.override (attrs: {
-        nativeBuildInputs = attrs.nativeBuildInputs;
+        nativeBuildInputs =
+          attrs.nativeBuildInputs
+          ++ (with env.pkgs; [
+            # Required to run under NixOS.
+            autoPatchelfHook
+          ]);
 
         # Executables required for runtime
         # These packages will be added to the PATH
