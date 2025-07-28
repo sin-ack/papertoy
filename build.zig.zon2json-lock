@@ -4,10 +4,10 @@
     "url": "https://codeberg.org/sin-ack/zig-wayland/archive/f18fef69b5f9096a667e7cb47fb96477657cdf92.tar.gz",
     "hash": "sha256-+8Wz1rjeL1dGx9U7heTp3fYdXUsC9NK2+SPYhRsvCDE="
   },
-  "zgl-1.1.0-p_NpAKE-CgBnmyP12H-ldbZLdImx1btyk8zPx0I5CGHX": {
+  "zgl-1.1.0-p_NpADNjBQAEJoOxiCci_ddmXZuPx1XAkmCsTQ1_vnib": {
     "name": "zgl",
-    "url": "https://github.com/sin-ack/zgl/archive/b3dc4c6034bdbd574a6b448626750909e51a6c33.tar.gz",
-    "hash": "sha256-q1LBXp2MpCzkpmCio9sgUAkpELMjE0YSade4hfAnk7I="
+    "url": "https://github.com/sin-ack/zgl/archive/21d06c1e6187401372f174cea602eaf85ce6f804.tar.gz",
+    "hash": "sha256-y0r4K20cXMBS7TxwIDCdWa8reGAEo01MzJFFx44var4="
   },
   "args-0.0.0-CiLiquDRAADuU_ueSmGquhHAuhDxxlfBokGj01ZdVYHt": {
     "name": "zig-args",
