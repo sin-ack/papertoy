@@ -10,9 +10,10 @@
             .hash = "wayland-0.4.0-dev-lQa1kjfMAQAkvyX7B4XFmdZt8w6d_OCMsee6uBJZEaFu",
         },
         .zgl = .{
-            // TODO: Update to the upstream URL once this change (or similar) is merged
-            .url = "https://github.com/sin-ack/zgl/archive/b3dc4c6034bdbd574a6b448626750909e51a6c33.tar.gz",
-            .hash = "zgl-1.1.0-p_NpAKE-CgBnmyP12H-ldbZLdImx1btyk8zPx0I5CGHX",
+            // NOTE: This is my opengl-3.3 branch which lowers the required OpenGL version to 3.3
+            //       from 4.5. It is otherwise identical to zgl upstream.
+            .url = "https://github.com/sin-ack/zgl/archive/21d06c1e6187401372f174cea602eaf85ce6f804.tar.gz",
+            .hash = "zgl-1.1.0-p_NpADNjBQAEJoOxiCci_ddmXZuPx1XAkmCsTQ1_vnib",
         },
         .@"zig-args" = .{
             .url = "https://github.com/ikskuh/zig-args/archive/4c305bcb45fd3c4b74b7bf7f907cf3fc12f415a2.tar.gz",

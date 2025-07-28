@@ -1,8 +1,8 @@
 // Adapted from https://github.com/ghostty-org/ghostty/blob/main/src/renderer/shaders/shadertoy_prefix.glsl
 // Copyright (c) 2024 Mitchell Hashimoto, License: MIT
-#version 430 core
+#version 330 core
 
-layout(binding = 0) uniform Globals {
+/* layout(binding = 0) */ uniform Globals {
     uniform vec3    iResolution;
     uniform float   iTime;
     uniform float   iTimeDelta;
@@ -21,7 +21,7 @@ layout(binding = 0) uniform Globals {
 // layout(binding = 2) uniform sampler2D    iChannel2;
 // layout(binding = 3) uniform sampler2D    iChannel3;
 
-layout(location = 0) in vec4 gl_FragCoord;
+/* layout(location = 0) */ in vec4 gl_FragCoord;
 layout(location = 0) out vec4 _fragColor;
 
 #define texture2D texture

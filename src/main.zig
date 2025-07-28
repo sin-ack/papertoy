@@ -490,7 +490,7 @@ const WlrSurface = struct {
 
         self.egl_context = egl_context: {
             const config_attributes = [_:egl.EGL_NONE]egl.EGLint{
-                egl.EGL_CONTEXT_MAJOR_VERSION, 4,
+                egl.EGL_CONTEXT_MAJOR_VERSION, 3,
                 egl.EGL_CONTEXT_MINOR_VERSION, 3,
             };
 
@@ -575,7 +575,7 @@ const FractionalScale = struct {
 };
 
 const vs_source =
-    \\#version 430 core
+    \\#version 330 core
     \\
     \\layout(location = 0) in vec2 position;
     \\
@@ -763,7 +763,7 @@ pub fn main() !u8 {
         .frame_rate = @floatFromInt(target_frame_rate),
     };
 
-    const vao = gl.VertexArray.create();
+    const vao = gl.VertexArray.gen();
     defer vao.delete();
     vao.bind();
 
@@ -776,29 +776,29 @@ pub fn main() !u8 {
     };
     // zig fmt: on
 
-    const vbo = gl.Buffer.create();
+    const vbo = gl.Buffer.gen();
     defer vbo.delete();
     {
         vbo.bind(.array_buffer);
-        vbo.data(f32, vertices[0..], .static_draw);
+        gl.bufferData(.array_buffer, f32, vertices[0..], .static_draw);
 
-        vao.attribFormat(0, 2, .float, false, 0);
-        vao.attribBinding(0, 0);
-        gl.bindVertexBuffer(0, vbo, 0, 2 * @sizeOf(f32));
-        vao.enableVertexAttribute(0);
+        gl.vertexAttribPointer(0, 2, .float, false, 2 * @sizeOf(f32), 0);
+        // gl.vertexAttribBinding(0, 0);
+        // gl.bindVertexBuffer(0, vbo, 0, 2 * @sizeOf(f32));
+        gl.enableVertexAttribArray(0);
     }
 
-    const ubo = gl.Buffer.create();
+    const ubo = gl.Buffer.gen();
     defer ubo.delete();
     ubo.bind(.uniform_buffer);
-    ubo.data(Uniforms, &.{uniforms}, .static_draw);
+    gl.bufferData(.uniform_buffer, Uniforms, &.{uniforms}, .static_draw);
     gl.bindBufferBase(.uniform_buffer, 0, ubo);
 
-    const ebo = gl.Buffer.create();
+    const ebo = gl.Buffer.gen();
     defer ebo.delete();
     {
         ebo.bind(.element_array_buffer);
-        ebo.data(u8, &.{
+        gl.bufferData(.element_array_buffer, u8, &.{
             0, 1, 2, // Top-left triangle
             2, 3, 0, // Bottom-right triangle
         }, .static_draw);
@@ -858,7 +858,7 @@ pub fn main() !u8 {
 
         program.use();
         vao.bind();
-        ubo.data(Uniforms, &.{uniforms}, .static_draw);
+        gl.bufferData(.uniform_buffer, Uniforms, &.{uniforms}, .static_draw);
 
         gl.drawElements(.triangles, 6, .unsigned_byte, 0);
 
