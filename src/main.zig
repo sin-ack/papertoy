@@ -328,6 +328,8 @@ const WlrSurface = struct {
 
         self.wlr_surface.setListener(*WlrSurface, listener, self);
 
+        // We want to ignore any exclusive zones set by other surfaces.
+        self.wlr_surface.setExclusiveZone(-1);
         self.wlr_surface.setSize(self.width, self.height);
         self.wl_surface.setBufferScale(@intCast(self.scale));
 
