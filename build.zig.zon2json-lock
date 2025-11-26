@@ -1,17 +1,19 @@
 {
-  "wayland-0.4.0-dev-lQa1kjfMAQAkvyX7B4XFmdZt8w6d_OCMsee6uBJZEaFu": {
+  "wayland-0.5.0-dev-lQa1kpfXAQAcgPkLlX_6VLfrYm2j07h1xvxjKbDwy5jk": {
     "name": "zig-wayland",
-    "url": "https://codeberg.org/sin-ack/zig-wayland/archive/f18fef69b5f9096a667e7cb47fb96477657cdf92.tar.gz",
-    "hash": "sha256-+8Wz1rjeL1dGx9U7heTp3fYdXUsC9NK2+SPYhRsvCDE="
+    "url": "git+https://codeberg.org/ifreund/zig-wayland.git#42a9edb1df8efd57cae0d05121ffa94d3df147c2",
+    "hash": "sha256-cBrNb21V9WPxN02tdtjxdwZ3cb77b3tZy2pf9vQh5Qo=",
+    "rev": "42a9edb1df8efd57cae0d05121ffa94d3df147c2"
   },
   "zgl-1.1.0-p_NpAOxhBQCJ4EP_bQsAoLhR_A0wxGZN9gfsH3f05Hdm": {
     "name": "zgl",
     "url": "https://github.com/sin-ack/zgl/archive/c8d9a0e57f9024a4090f24b8365071b890231c46.tar.gz",
     "hash": "sha256-p5ezSDAJzXRvsBrDWf2dYvBkvsSmDeiRZVANBMlPbk8="
   },
-  "args-0.0.0-CiLiquDRAADuU_ueSmGquhHAuhDxxlfBokGj01ZdVYHt": {
+  "args-0.0.0-CiLiqo_RAADz2TiHUzG5-0Mk7IZHR-h1SZgUrb_k4c7d": {
     "name": "zig-args",
-    "url": "https://github.com/ikskuh/zig-args/archive/4c305bcb45fd3c4b74b7bf7f907cf3fc12f415a2.tar.gz",
-    "hash": "sha256-XssHU4C19Udj0TU3MlD8J5KdGal1fMHIx7WJ/K2+Xno="
+    "url": "git+https://github.com/ikskuh/zig-args.git#e060ac80c244e9675471b6d213b22ddc83cc8f98",
+    "hash": "sha256-dT+/DpHdIeoZRz4XPXEknWk/XaPegwIP9DNRLpzTlqU=",
+    "rev": "e060ac80c244e9675471b6d213b22ddc83cc8f98"
   }
 }

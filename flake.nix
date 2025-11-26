@@ -25,14 +25,8 @@
   in (flake-utils.lib.eachDefaultSystem (system: let
     pkgs = nixpkgs.legacyPackages.${system};
 
-    zigv = removeAttrs (pkgs.callPackage ./zig-version.nix
-      {
-        zigHook = env.zigHook;
-        zigBin = pkgs.callPackage (builtins.toPath (zig2nix.outPath + "/src/zig/bin.nix"));
-      }) ["override" "overrideAttrs" "overrideDerivation"];
-
     env = zig2nix.outputs.zig-env.${system} {
-      zig = zigv.master;
+      zig = zig2nix.outputs.packages.${system}.zig-0_15_2;
     };
 
     # Deps that need to be present when we run 'zig build'
@@ -70,12 +64,7 @@
 
       # nix build .
       packages.default = packages.foreign.override (attrs: {
-        nativeBuildInputs =
-          attrs.nativeBuildInputs
-          ++ (with env.pkgs; [
-            # Required to run under NixOS.
-            autoPatchelfHook
-          ]);
+        nativeBuildInputs = attrs.nativeBuildInputs;
 
         # Executables required for runtime
         # These packages will be added to the PATH
@@ -92,9 +81,6 @@
         type = "app";
         program = "${packages.foreign}/bin/papertoy";
       };
-
-      # nix run .
-      apps.default = env.app appDeps "zig build run -- \"$@\"";
 
       # nix run .#build
       apps.build = env.app appDeps "zig build \"$@\"";

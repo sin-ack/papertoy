@@ -63,7 +63,7 @@ You can add the flake to your profile with: `nix profile install github:sin-ack/
 
 #### Dependencies
 
-- Zig master (tested version: `0.15.0-dev.1149+4e6a04929`)
+- Zig 0.15.2
 - `libwayland`
   - Debian and variants: `libwayland-dev`
   - Gentoo: `dev-util/wayland`
