@@ -268,7 +268,7 @@ const WlrSurface = struct {
     wlr_surface: *zwlr.LayerSurfaceV1,
 
     /// Create a wlroots surface with EGL for GPU rendering.
-    pub fn createEgl(allocator: Allocator, display: *wl.Display, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
+    pub fn createEgl(allocator: Allocator, display: *wl.Display, compositor: *wl.Compositor, render_layer: zwlr.LayerShellV1.Layer, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
         const self = try allocator.create(WlrSurface);
         errdefer allocator.destroy(self);
 
@@ -312,7 +312,7 @@ const WlrSurface = struct {
         };
         errdefer _ = egl.eglDestroySurface(self.egl_display, self.egl_surface);
 
-        self.wlr_surface = try layer_shell.getLayerSurface(self.wl_surface, output.output, .background, "papertoy");
+        self.wlr_surface = try layer_shell.getLayerSurface(self.wl_surface, output.output, render_layer, "papertoy");
         errdefer self.wlr_surface.destroy();
 
         self.wlr_surface.setListener(*WlrSurface, listener, self);
@@ -591,6 +591,7 @@ const Options = struct {
     output: ?[]const u8 = null,
     @"frame-rate": ?u32 = null,
     resolution: ?[]const u8 = null,
+    layer: ?[]const u8 = null,
     help: bool = false,
 };
 
@@ -612,6 +613,7 @@ pub fn printUsage() !void {
         \\  --output <name>    Set the output to render the shader on (default: first available output)
         \\  --frame-rate <fps> Set a custom frame rate for the shader (default: vsync)
         \\  --resolution <WxH> Set the resolution of the shader (default: output resolution)
+        \\  --layer <name>     Set an override to which Wayland Layer the shader is rendered on (default: background)
         \\  --help             Show this help message
         \\
     );
@@ -730,7 +732,15 @@ pub fn main() !u8 {
         return 1;
     };
 
-    const surface = try WlrSurface.createEgl(allocator, display, compositor, layer_shell, registry_listener.fractional_scale_manager_v1, registry_listener.viewporter_v1, output, custom_resolution);
+    const layer_override: zwlr.LayerShellV1.Layer = if (options.options.layer) |layer_str|
+        std.meta.stringToEnum(zwlr.LayerShellV1.Layer, layer_str) orelse {
+            std.log.err("invalid layer: {s}, must be one of: background, bottom, top, overlay", .{layer_str});
+            return 1;
+        }
+    else
+        .background;
+
+    const surface = try WlrSurface.createEgl(allocator, display, compositor, layer_override, layer_shell, registry_listener.fractional_scale_manager_v1, registry_listener.viewporter_v1, output, custom_resolution);
     defer surface.deinit();
 
     try surface.makeCurrent();
