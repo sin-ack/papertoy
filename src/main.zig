@@ -42,7 +42,7 @@ const Output = struct {
     /// The ID of the output.
     id: u32,
     /// The name of the output. Set by the `name` event.
-    name: []const u8 = undefined,
+    name: ?[]const u8 = null,
     /// The human-friendly description of the output. Set by the `description` event.
     description: ?[]const u8 = null,
     /// The scale of this output. Defaults to 1. This only determines the scale of the
@@ -58,6 +58,8 @@ const Output = struct {
     /// The refresh rate of the output in Hz (informative, not used for rendering).
     /// We pass it down to the shader in case it wants to use it.
     refresh_rate: u32 = undefined,
+    /// The transform of the output. Set by the `geometry` event.
+    transform: wl.Output.Transform = .normal,
 
     /// Create a new output object.
     pub fn create(allocator: Allocator, output: *wl.Output) !*Output {
@@ -81,7 +83,7 @@ const Output = struct {
 
     /// Destroy the output object and free its resources.
     pub fn destroy(self: *Output) void {
-        self.allocator.free(self.name);
+        if (self.name) |n| self.allocator.free(n);
         if (self.description) |description| self.allocator.free(description);
         self.allocator.destroy(self);
     }
@@ -92,7 +94,7 @@ const Output = struct {
 
         switch (event) {
             .name => |name| {
-                // FIXME: Correctly deallocate the previous name.
+                if (self.name) |n| self.allocator.free(n);
                 self.ready = false;
                 self.name = self.allocator.dupe(u8, std.mem.sliceTo(name.name, 0)) catch @panic("OOM");
             },
@@ -110,7 +112,7 @@ const Output = struct {
 
                 self.width = @intCast(mode.width);
                 self.height = @intCast(mode.height);
-                self.refresh_rate = @intCast(mode.refresh);
+                self.refresh_rate = @intCast(@divTrunc(mode.refresh, 1000));
             },
             .scale => |scale| {
                 self.ready = false;
@@ -122,7 +124,9 @@ const Output = struct {
             .done => {
                 self.ready = true;
             },
-            .geometry => {},
+            .geometry => |geometry| {
+                self.transform = geometry.transform;
+            },
         }
     }
 
@@ -218,243 +222,18 @@ const RegistryListener = struct {
     }
 };
 
-/// A wlroots surface object. This is used for the wlroots shell layer to display a surface.
-const WlrSurface = struct {
-    allocator: Allocator,
-
-    // --- EGL ---
+/// Wrapper around the Wayland EGL display and configuration.
+const GLDisplay = struct {
     /// The EGL display handle.
     egl_display: egl.EGLDisplay,
     /// The configuration chosen for EGL.
     egl_config: egl.EGLConfig,
-    /// The EGL context handle.
-    egl_context: egl.EGLContext,
-    /// The EGL surface created for the window.
-    egl_surface: egl.EGLSurface,
 
-    // --- State ---
-    /// The current width of the surface.
-    width: u32 = undefined,
-    /// The current height of the surface.
-    height: u32 = undefined,
-    /// The current scale of the surface buffer.
-    scale: u32 = undefined,
-    /// The destination width of the surface after applying any scaling necessary for the output.
-    destination_width: u32 = undefined,
-    /// The destination height of the surface after applying any scaling necessary for the output.
-    destination_height: u32 = undefined,
-    /// The custom resolution to use for the surface set by the user. If set,
-    /// overrides the output resolution.
-    custom_resolution: ?Resolution = null,
-
-    // --- Wayland Core ---
-    /// The Wayland EGL window.
-    wl_egl_window: *wl.EglWindow,
-    /// The output associated with this surface.
-    output: *Output,
-    /// The Wayland surface.
-    wl_surface: *wl.Surface,
-
-    // --- Fractional scale handling ---
-    /// The fractional scale object associated with the wl_surface. If the compositor does not
-    /// support fractional scaling, this will be null.
-    fractional_scale: ?*FractionalScale,
-    /// The viewport associated with the wl_surface. This is used to scale the surface back to
-    /// native size in a fractionally-scaled output.
-    viewport: ?*wp.Viewport,
-
-    // --- wlroots Layer Shell ---
-    /// The wlroots surface.
-    wlr_surface: *zwlr.LayerSurfaceV1,
-
-    /// Create a wlroots surface with EGL for GPU rendering.
-    pub fn createEgl(allocator: Allocator, display: *wl.Display, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
-        const self = try allocator.create(WlrSurface);
-        errdefer allocator.destroy(self);
-
-        self.allocator = allocator;
-        self.output = output;
-
-        self.width = output.width;
-        self.height = output.height;
-        self.scale = output.scale;
-        self.destination_width = output.width;
-        self.destination_height = output.height;
-        self.custom_resolution = custom_resolution;
-
-        if (custom_resolution) |resolution| {
-            self.width = resolution.width;
-            self.height = resolution.height;
-        }
-
-        try self.initEgl(display);
-        errdefer {
-            _ = egl.eglDestroySurface(self.egl_display, self.egl_surface);
-            _ = egl.eglTerminate(self.egl_display);
-        }
-
-        self.wl_surface = try compositor.createSurface();
-        errdefer self.wl_surface.destroy();
-
-        self.wl_egl_window = try wl.EglWindow.create(self.wl_surface, @intCast(self.width), @intCast(self.height));
-        errdefer self.wl_egl_window.destroy();
-
-        self.egl_surface = egl.eglCreatePlatformWindowSurface(
-            self.egl_display,
-            self.egl_config,
-            @ptrCast(self.wl_egl_window),
-            null,
-        ) orelse switch (egl.eglGetError()) {
-            egl.EGL_BAD_MATCH => return error.MismatchedConfig,
-            egl.EGL_BAD_CONFIG => return error.InvalidConfig,
-            egl.EGL_BAD_NATIVE_WINDOW => return error.InvalidNativeWindow,
-            else => return error.FailedToCreateSurface,
+    pub fn init(display: *wl.Display) !GLDisplay {
+        var self: GLDisplay = .{
+            .egl_display = egl.eglGetPlatformDisplay(egl.EGL_PLATFORM_WAYLAND_KHR, display, null),
+            .egl_config = undefined,
         };
-        errdefer _ = egl.eglDestroySurface(self.egl_display, self.egl_surface);
-
-        self.wlr_surface = try layer_shell.getLayerSurface(self.wl_surface, output.output, .background, "papertoy");
-        errdefer self.wlr_surface.destroy();
-
-        self.wlr_surface.setListener(*WlrSurface, listener, self);
-
-        // We want to ignore any exclusive zones set by other surfaces.
-        self.wlr_surface.setExclusiveZone(-1);
-        self.wlr_surface.setSize(self.destination_width, self.destination_height);
-
-        // NOTE: When the wp_fractional_scale_manager_v1 protocol is active, the
-        //       application is responsible for rendering at the exact physical
-        //       pixel size, and the Wayland surface buffer scale should be set
-        //       to 1. We were previously always using the output scale here,
-        //       which caused "source rectangle extends outside of the content
-        //       area" errors on scaled outputs.
-        if (fractional_scale_manager != null) {
-            self.wl_surface.setBufferScale(1);
-        } else {
-            self.wl_surface.setBufferScale(@intCast(self.scale));
-        }
-
-        // TODO: Make the user set this.
-        self.wlr_surface.setAnchor(.{ .top = true, .left = true });
-
-        if (fractional_scale_manager) |manager| {
-            self.fractional_scale = try FractionalScale.create(allocator, manager, self.wl_surface);
-            self.viewport = try viewporter.?.getViewport(self.wl_surface);
-        } else {
-            // No fractional scale manager available for the current compositor.
-            std.log.warn("No fractional scale manager available, using output scale instead", .{});
-            self.fractional_scale = null;
-            self.viewport = null;
-        }
-        errdefer if (self.fractional_scale) |scale| scale.destroy(allocator);
-
-        // Roundtrip once to sync the configuration.
-        self.wl_surface.commit();
-        if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
-
-        return self;
-    }
-
-    /// Deinitialize the wlroots surface.
-    pub fn deinit(self: *WlrSurface) void {
-        _ = egl.eglDestroyContext(self.egl_display, self.egl_context);
-        _ = egl.eglTerminate(self.egl_display);
-        if (self.fractional_scale) |scale| scale.destroy(self.allocator);
-        if (self.viewport) |viewport| viewport.destroy();
-        self.allocator.destroy(self);
-    }
-
-    /// Make the EGL context current.
-    fn makeCurrent(self: *WlrSurface) !void {
-        if (egl.eglMakeCurrent(self.egl_display, self.egl_surface, self.egl_surface, self.egl_context) != egl.EGL_TRUE) {
-            switch (egl.eglGetError()) {
-                egl.EGL_BAD_ACCESS => return error.EglThreadError,
-                egl.EGL_BAD_MATCH => return error.MismatchedContextOrSurfaces,
-                egl.EGL_BAD_NATIVE_WINDOW => return error.EglWindowInvalid,
-                egl.EGL_BAD_CONTEXT => return error.InvalidEglContext,
-                egl.EGL_BAD_ALLOC => return error.OutOfMemory,
-                else => return error.EglUnknownError,
-            }
-        }
-    }
-
-    /// Swap the EGL buffers.
-    fn swapBuffers(self: *WlrSurface) !void {
-        if (egl.eglSwapBuffers(self.egl_display, self.egl_surface) != egl.EGL_TRUE) {
-            switch (egl.eglGetError()) {
-                egl.EGL_BAD_DISPLAY => return error.InvalidDisplay,
-                egl.EGL_BAD_SURFACE => return error.PresentInvalidSurface,
-                egl.EGL_CONTEXT_LOST => return error.EGLContextLost,
-                else => return error.EglUnknownError,
-            }
-        }
-    }
-
-    /// Create a callback object that will be called when it is an appropriate time to render a new
-    /// frame.
-    fn requestAnimationFrame(self: *WlrSurface) !*wl.Callback {
-        return self.wl_surface.frame();
-    }
-
-    /// Synchronize changes in the output size and scale with the surface.
-    /// Returns whether any changes were applied.
-    pub fn synchronizeOutputChanges(self: *WlrSurface, display: *wl.Display) !bool {
-        try self.output.wait(display);
-
-        var expected_width = self.output.width;
-        var expected_height = self.output.height;
-        if (self.custom_resolution) |resolution| {
-            expected_width = resolution.width;
-            expected_height = resolution.height;
-        }
-
-        var expected_destination_width = self.output.width;
-        var expected_destination_height = self.output.height;
-        if (self.fractional_scale) |scale| {
-            expected_destination_width = scale.scaleSize(expected_destination_width);
-            expected_destination_height = scale.scaleSize(expected_destination_height);
-        }
-
-        const width_changed = expected_width != self.width;
-        const height_changed = expected_height != self.height;
-        const scale_changed = self.output.scale != self.scale;
-        const destination_width_changed = expected_destination_width != self.destination_width;
-        const destination_height_changed = expected_destination_height != self.destination_height;
-
-        if (!width_changed and !height_changed and !scale_changed and !destination_width_changed and !destination_height_changed) {
-            // No changes to apply.
-            return false;
-        }
-
-        self.width = expected_width;
-        self.height = expected_height;
-        self.scale = self.output.scale;
-        self.destination_width = expected_destination_width;
-        self.destination_height = expected_destination_height;
-
-        // NOTE: See comment in `createEgl` about fractional scale handling.
-        if (self.fractional_scale != null) {
-            self.wl_surface.setBufferScale(1);
-        } else {
-            self.wl_surface.setBufferScale(@intCast(self.scale));
-        }
-
-        self.wlr_surface.setSize(self.destination_width, self.destination_height);
-        self.wl_egl_window.resize(@intCast(self.width), @intCast(self.height), 0, 0);
-        std.log.debug("Surface resized to ({}, {}) with scale {}", .{ self.width, self.height, self.scale });
-
-        if (self.viewport) |viewport| {
-            viewport.setSource(.fromInt(0), .fromInt(0), .fromInt(@intCast(self.width)), .fromInt(@intCast(self.height)));
-            viewport.setDestination(@intCast(self.destination_width), @intCast(self.destination_height));
-            std.log.debug("Viewport set to source: ({}, {}, {}, {}), destination: ({}, {})", .{ 0, 0, self.width, self.height, self.destination_width, self.destination_height });
-        }
-
-        self.wl_surface.commit();
-        return true;
-    }
-
-    /// Initialize EGL.
-    fn initEgl(self: *WlrSurface, display: *wl.Display) !void {
-        self.egl_display = egl.eglGetPlatformDisplay(egl.EGL_PLATFORM_WAYLAND_KHR, display, null);
 
         var egl_major: egl.EGLint = 0;
         var egl_minor: egl.EGLint = 0;
@@ -496,13 +275,36 @@ const WlrSurface = struct {
             }
         }
 
-        self.egl_context = egl_context: {
+        try gl.loadExtensions({}, getProcAddress);
+
+        return self;
+    }
+
+    pub fn deinit(self: *GLDisplay) void {
+        _ = egl.eglTerminate(self.egl_display);
+    }
+
+    fn getProcAddress(ctx: void, name: [:0]const u8) ?gl.binding.FunctionPointer {
+        _ = ctx;
+        return egl.eglGetProcAddress(name);
+    }
+};
+
+/// Wrapper around an EGL context for one output.
+const GLContext = struct {
+    /// The EGL display and config this context belongs to.
+    gl_display: *GLDisplay,
+    /// The EGL context handle.
+    egl_context: egl.EGLContext,
+
+    pub fn init(gl_display: *GLDisplay) !GLContext {
+        const egl_context = egl_context: {
             const config_attributes = [_:egl.EGL_NONE]egl.EGLint{
                 egl.EGL_CONTEXT_MAJOR_VERSION, 3,
                 egl.EGL_CONTEXT_MINOR_VERSION, 3,
             };
 
-            break :egl_context egl.eglCreateContext(self.egl_display, self.egl_config, egl.EGL_NO_CONTEXT, &config_attributes) orelse switch (egl.eglGetError()) {
+            break :egl_context egl.eglCreateContext(gl_display.egl_display, gl_display.egl_config, egl.EGL_NO_CONTEXT, &config_attributes) orelse switch (egl.eglGetError()) {
                 egl.EGL_BAD_ATTRIBUTE => return error.InvalidContextAttribute,
                 egl.EGL_BAD_CONTEXT => return error.EglBadContext,
                 egl.EGL_BAD_MATCH => return error.UnsupportedConfig,
@@ -510,22 +312,282 @@ const WlrSurface = struct {
             };
         };
 
-        try gl.loadExtensions({}, getProcAddress);
+        return .{
+            .gl_display = gl_display,
+            .egl_context = egl_context,
+        };
     }
 
-    fn getProcAddress(ctx: void, name: [:0]const u8) ?gl.binding.FunctionPointer {
-        _ = ctx;
-        return egl.eglGetProcAddress(name);
+    pub fn deinit(self: *GLContext) void {
+        _ = egl.eglDestroyContext(self.gl_display.egl_display, self.egl_context);
+    }
+};
+
+/// A wlroots surface object. This is used for the wlroots shell layer to display a surface.
+const WlrSurface = struct {
+    allocator: Allocator,
+
+    // --- EGL ---
+    /// The EGL display and config shared by all output contexts.
+    gl_display: *GLDisplay,
+    /// The OpenGL context for this surface.
+    gl_context: GLContext,
+    /// The EGL surface created for the window.
+    egl_surface: egl.EGLSurface,
+
+    // --- State ---
+    /// The current width of the surface.
+    width: u32 = undefined,
+    /// The current height of the surface.
+    height: u32 = undefined,
+    /// The current scale of the surface buffer.
+    scale: u32 = undefined,
+    /// The destination width of the surface after applying any scaling necessary for the output.
+    destination_width: u32 = undefined,
+    /// The destination height of the surface after applying any scaling necessary for the output.
+    destination_height: u32 = undefined,
+    /// The custom resolution to use for the surface set by the user. If set,
+    /// overrides the output resolution.
+    custom_resolution: ?Resolution = null,
+
+    // --- Wayland Core ---
+    /// The Wayland EGL window.
+    wl_egl_window: *wl.EglWindow,
+    /// The output associated with this surface.
+    output: *Output,
+    /// The Wayland surface.
+    wl_surface: *wl.Surface,
+
+    // --- Fractional scale handling ---
+    /// The fractional scale object associated with the wl_surface. If the compositor does not
+    /// support fractional scaling, this will be null.
+    fractional_scale: ?*FractionalScale,
+    /// The viewport associated with the wl_surface. This is used to scale the surface back to
+    /// native size in a fractionally-scaled output.
+    viewport: ?*wp.Viewport,
+
+    // --- wlroots Layer Shell ---
+    /// The wlroots surface.
+    wlr_surface: *zwlr.LayerSurfaceV1,
+
+    /// Pending configuration from the compositor.
+    pending_config: ?struct {
+        serial: u32,
+        width: u32,
+        height: u32,
+    } = null,
+    config_dirty: bool = false,
+
+    /// Create a wlroots surface with EGL for GPU rendering.
+    pub fn createEgl(allocator: Allocator, gl_display: *GLDisplay, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
+        const self = try allocator.create(WlrSurface);
+        errdefer allocator.destroy(self);
+
+        self.allocator = allocator;
+        self.output = output;
+        self.gl_display = gl_display;
+        self.gl_context = try GLContext.init(gl_display);
+        errdefer self.gl_context.deinit();
+
+        self.destination_width = output.width;
+        self.destination_height = output.height;
+        self.custom_resolution = custom_resolution;
+
+        if (custom_resolution) |resolution| {
+            self.destination_width = resolution.width;
+            self.destination_height = resolution.height;
+        }
+
+        self.width = self.destination_width;
+        self.height = self.destination_height;
+        self.scale = output.scale; // Initial scale guess, will be refined in handleConfiguration or by fractional scale
+
+        self.wl_surface = try compositor.createSurface();
+        errdefer self.wl_surface.destroy();
+
+        self.wl_egl_window = try wl.EglWindow.create(self.wl_surface, @intCast(self.width), @intCast(self.height));
+        errdefer self.wl_egl_window.destroy();
+
+        self.egl_surface = egl.eglCreatePlatformWindowSurface(
+            self.gl_display.egl_display,
+            self.gl_display.egl_config,
+            @ptrCast(self.wl_egl_window),
+            null,
+        ) orelse switch (egl.eglGetError()) {
+            egl.EGL_BAD_MATCH => return error.MismatchedConfig,
+            egl.EGL_BAD_CONFIG => return error.InvalidConfig,
+            egl.EGL_BAD_NATIVE_WINDOW => return error.InvalidNativeWindow,
+            else => return error.FailedToCreateSurface,
+        };
+        errdefer _ = egl.eglDestroySurface(self.gl_display.egl_display, self.egl_surface);
+
+        self.wlr_surface = try layer_shell.getLayerSurface(self.wl_surface, output.output, .background, "papertoy");
+        errdefer self.wlr_surface.destroy();
+
+        self.wlr_surface.setListener(*WlrSurface, listener, self);
+
+        // We want to ignore any exclusive zones set by other surfaces.
+        self.wlr_surface.setExclusiveZone(-1);
+        self.wlr_surface.setSize(self.destination_width, self.destination_height);
+        if (fractional_scale_manager != null) {
+            self.wl_surface.setBufferScale(1);
+        } else {
+            self.wl_surface.setBufferScale(@intCast(self.scale));
+        }
+
+        // Anchor to all 4 sides to fill the screen.
+        self.wlr_surface.setAnchor(.{ .top = true, .bottom = true, .left = true, .right = true });
+
+        if (fractional_scale_manager) |manager| {
+            self.fractional_scale = try FractionalScale.create(allocator, manager, self.wl_surface);
+            self.viewport = try viewporter.?.getViewport(self.wl_surface);
+        } else {
+            // No fractional scale manager available for the current compositor.
+            std.log.warn("No fractional scale manager available, using output scale instead", .{});
+            self.fractional_scale = null;
+            self.viewport = null;
+        }
+        errdefer if (self.fractional_scale) |scale| scale.destroy(allocator);
+
+        // Roundtrip once to sync the configuration.
+        self.wl_surface.commit();
+
+        return self;
+    }
+
+    /// Deinitialize the wlroots surface.
+    pub fn deinit(self: *WlrSurface) void {
+        _ = egl.eglDestroySurface(self.gl_display.egl_display, self.egl_surface);
+        self.gl_context.deinit();
+        if (self.fractional_scale) |scale| scale.destroy(self.allocator);
+        if (self.viewport) |viewport| viewport.destroy();
+        self.allocator.destroy(self);
+    }
+
+    /// Make the EGL context current.
+    fn makeCurrent(self: *WlrSurface) !void {
+        if (egl.eglMakeCurrent(self.gl_display.egl_display, self.egl_surface, self.egl_surface, self.gl_context.egl_context) != egl.EGL_TRUE) {
+            switch (egl.eglGetError()) {
+                egl.EGL_BAD_ACCESS => return error.EglThreadError,
+                egl.EGL_BAD_MATCH => return error.MismatchedContextOrSurfaces,
+                egl.EGL_BAD_NATIVE_WINDOW => return error.EglWindowInvalid,
+                egl.EGL_BAD_CONTEXT => return error.InvalidEglContext,
+                egl.EGL_BAD_ALLOC => return error.OutOfMemory,
+                else => return error.EglUnknownError,
+            }
+        }
+    }
+
+    /// Swap the EGL buffers.
+    fn swapBuffers(self: *WlrSurface) !void {
+        if (egl.eglSwapBuffers(self.gl_display.egl_display, self.egl_surface) != egl.EGL_TRUE) {
+            switch (egl.eglGetError()) {
+                egl.EGL_BAD_DISPLAY => return error.InvalidDisplay,
+                egl.EGL_BAD_SURFACE => return error.PresentInvalidSurface,
+                egl.EGL_CONTEXT_LOST => return error.EGLContextLost,
+                else => return error.EglUnknownError,
+            }
+        }
+    }
+
+    /// Create a callback object that will be called when it is an appropriate time to render a new
+    /// frame.
+    fn requestAnimationFrame(self: *WlrSurface) !*wl.Callback {
+        return self.wl_surface.frame();
+    }
+
+    /// Handle any pending configuration events from the compositor.
+    /// Returns whether the surface size changed.
+    pub fn handleConfiguration(self: *WlrSurface) !bool {
+        if (!self.config_dirty) return false;
+        const config = self.pending_config orelse return false;
+
+        self.config_dirty = false;
+        self.wlr_surface.ackConfigure(config.serial);
+
+        // Determine the logical size of the surface.
+        var logical_width = config.width;
+        var logical_height = config.height;
+
+        // If the compositor sends a zero dimension, it means we should decide
+        // that size. Default only the zero axis to the output's logical size.
+        if (logical_width == 0 or logical_height == 0) {
+            var output_width = self.output.width;
+            var output_height = self.output.height;
+
+            // If the output is rotated 90 or 270 degrees, swap width and height.
+            switch (self.output.transform) {
+                .@"90", .@"270", .flipped_90, .flipped_270 => {
+                    std.mem.swap(u32, &output_width, &output_height);
+                },
+                else => {},
+            }
+
+            if (logical_width == 0) logical_width = output_width / self.output.scale;
+            if (logical_height == 0) logical_height = output_height / self.output.scale;
+        }
+
+        // Custom resolution overrides everything.
+        if (self.custom_resolution) |resolution| {
+            logical_width = resolution.width;
+            logical_height = resolution.height;
+        }
+
+        var buffer_width = logical_width;
+        var buffer_height = logical_height;
+        var buffer_scale: i32 = @intCast(self.scale);
+
+        if (self.fractional_scale) |fs| {
+            buffer_width = fs.scaleSize(logical_width);
+            buffer_height = fs.scaleSize(logical_height);
+            buffer_scale = 1;
+        } else {
+            buffer_width = logical_width * self.output.scale;
+            buffer_height = logical_height * self.output.scale;
+            buffer_scale = @intCast(self.output.scale);
+        }
+
+        const width_changed = self.width != buffer_width;
+        const height_changed = self.height != buffer_height;
+        // We also need to check if destination size changed, or scale changed.
+        const dest_width_changed = self.destination_width != logical_width;
+        const dest_height_changed = self.destination_height != logical_height;
+        const scale_changed = self.scale != buffer_scale;
+
+        if (!width_changed and !height_changed and !dest_width_changed and !dest_height_changed and !scale_changed) return false;
+
+        self.width = buffer_width;
+        self.height = buffer_height;
+        self.destination_width = logical_width;
+        self.destination_height = logical_height;
+        self.scale = @intCast(buffer_scale);
+
+        self.wl_surface.setBufferScale(buffer_scale);
+        self.wlr_surface.setSize(self.destination_width, self.destination_height);
+        self.wl_egl_window.resize(@intCast(self.width), @intCast(self.height), 0, 0);
+
+        std.log.debug("Surface configured: Buffer={}x{}, Logical={}x{}, Scale={}", .{ self.width, self.height, self.destination_width, self.destination_height, buffer_scale });
+
+        if (self.viewport) |viewport| {
+            viewport.setSource(.fromInt(0), .fromInt(0), .fromInt(@intCast(self.width)), .fromInt(@intCast(self.height)));
+            viewport.setDestination(@intCast(self.destination_width), @intCast(self.destination_height));
+        }
+
+        return true;
     }
 
     /// Handle a wlroots surface event.
     fn listener(wlr_surface: *zwlr.LayerSurfaceV1, event: zwlr.LayerSurfaceV1.Event, self: *WlrSurface) void {
-        _ = self;
+        _ = wlr_surface;
 
         switch (event) {
             .configure => |configure| {
-                const serial = configure.serial;
-                wlr_surface.ackConfigure(serial);
+                self.pending_config = .{
+                    .serial = configure.serial,
+                    .width = configure.width,
+                    .height = configure.height,
+                };
+                self.config_dirty = true;
             },
             .closed => {},
         }
@@ -564,7 +626,7 @@ const FractionalScale = struct {
     /// this will return the original size.
     pub fn scaleSize(self: *FractionalScale, size: u32) u32 {
         return if (self.ready)
-            (size * 120) / self.preferred_scale
+            (size * self.preferred_scale) / 120
         else
             size;
     }
@@ -587,12 +649,181 @@ const Resolution = struct {
     height: u32,
 };
 
+const OutputConfig = struct {
+    id: ?[]const u8 = null,
+    resolution: ?Resolution = null,
+    frame_rate: ?u32 = null,
+};
+
+// Global storage for output configurations parsed from CLI
+var global_output_configs = std.ArrayListUnmanaged(OutputConfig){};
+
+const OutputConfigCLI = struct {
+    pub fn parse(str: []const u8) !OutputConfigCLI {
+        const allocator = std.heap.c_allocator;
+        const config = try parseOutputConfigString(allocator, str);
+        try global_output_configs.append(allocator, config);
+        return .{};
+    }
+};
+
 const Options = struct {
-    output: ?[]const u8 = null,
+    output: OutputConfigCLI = .{}, // Dummy field to trigger parsing
     @"frame-rate": ?u32 = null,
     resolution: ?[]const u8 = null,
     help: bool = false,
 };
+
+fn parseResolution(s: []const u8) !Resolution {
+    const trimmed = std.mem.trim(u8, s, " \t\r\n");
+    var it = std.mem.splitScalar(u8, trimmed, 'x');
+    const width_str = it.next() orelse return error.InvalidResolutionFormat;
+    const height_str = it.next() orelse return error.InvalidResolutionFormat;
+    if (it.next() != null) return error.InvalidResolutionFormat;
+
+    const width = std.fmt.parseInt(u32, width_str, 10) catch |err| switch (err) {
+        error.InvalidCharacter => return error.InvalidResolutionValue,
+        error.Overflow => return error.ResolutionOverflow,
+    };
+    const height = std.fmt.parseInt(u32, height_str, 10) catch |err| switch (err) {
+        error.InvalidCharacter => return error.InvalidResolutionValue,
+        error.Overflow => return error.ResolutionOverflow,
+    };
+    if (width == 0 or height == 0) return error.ResolutionMustBePositive;
+    return .{ .width = width, .height = height };
+}
+
+fn parseOutputConfigString(allocator: Allocator, s: []const u8) !OutputConfig {
+    const trimmed = std.mem.trim(u8, s, " \t\r\n");
+    if (trimmed.len == 0) return error.OutputIdRequired;
+
+    if (std.mem.indexOfScalar(u8, trimmed, '=') == null) {
+        if (std.mem.indexOfScalar(u8, trimmed, ',') != null) return error.InvalidOutputConfig;
+        return .{ .id = try allocator.dupe(u8, trimmed) };
+    }
+
+    var config: OutputConfig = .{};
+    errdefer if (config.id) |id| allocator.free(id);
+
+    var it = std.mem.splitScalar(u8, trimmed, ',');
+    while (it.next()) |raw_pair| {
+        const pair = std.mem.trim(u8, raw_pair, " \t\r\n");
+        if (pair.len == 0) return error.InvalidOutputConfig;
+
+        var pair_it = std.mem.splitScalar(u8, pair, '=');
+        const key = std.mem.trim(u8, pair_it.next() orelse return error.InvalidOutputConfig, " \t\r\n");
+        const value = std.mem.trim(u8, pair_it.next() orelse return error.InvalidOutputConfig, " \t\r\n");
+        if (pair_it.next() != null) return error.InvalidOutputConfig;
+
+        if (std.mem.eql(u8, key, "id")) {
+            if (value.len == 0) return error.OutputIdRequired;
+            if (config.id != null) return error.DuplicateOutputId;
+            config.id = try allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "resolution")) {
+            if (config.resolution != null) return error.DuplicateResolution;
+            config.resolution = try parseResolution(value);
+        } else if (std.mem.eql(u8, key, "frame-rate")) {
+            if (config.frame_rate != null) return error.DuplicateFrameRate;
+            config.frame_rate = std.fmt.parseInt(u32, value, 10) catch |err| switch (err) {
+                error.InvalidCharacter => return error.InvalidFrameRateValue,
+                error.Overflow => return error.FrameRateOverflow,
+            };
+            if (config.frame_rate.? == 0) return error.FrameRateMustBePositive;
+        } else {
+            return error.UnknownOutputConfigKey;
+        }
+    }
+
+    if (config.id == null) return error.OutputIdRequired;
+    return config;
+}
+
+fn applyOutputConfigDefaults(config: *OutputConfig, resolution: ?Resolution, frame_rate: ?u32) void {
+    if (config.resolution == null) config.resolution = resolution;
+    if (config.frame_rate == null) config.frame_rate = frame_rate;
+}
+
+fn findDuplicateOutputConfig(configs: []const OutputConfig) ?[]const u8 {
+    for (configs, 0..) |config, i| {
+        const id = config.id.?;
+        for (configs[i + 1 ..]) |other| {
+            if (std.mem.eql(u8, id, other.id.?)) return id;
+        }
+    }
+    return null;
+}
+
+test "parseResolution parses trimmed positive dimensions" {
+    const resolution = try parseResolution(" 1920x1080 ");
+    try std.testing.expectEqual(@as(u32, 1920), resolution.width);
+    try std.testing.expectEqual(@as(u32, 1080), resolution.height);
+}
+
+test "parseResolution rejects malformed or zero dimensions" {
+    try std.testing.expectError(error.InvalidResolutionFormat, parseResolution("1920"));
+    try std.testing.expectError(error.InvalidResolutionFormat, parseResolution("1920x1080x60"));
+    try std.testing.expectError(error.InvalidResolutionValue, parseResolution("widex1080"));
+    try std.testing.expectError(error.ResolutionMustBePositive, parseResolution("0x1080"));
+    try std.testing.expectError(error.ResolutionMustBePositive, parseResolution("1920x0"));
+}
+
+test "parseOutputConfigString accepts explicit config and legacy output shorthand" {
+    const allocator = std.testing.allocator;
+
+    const explicit = try parseOutputConfigString(allocator, "id=DP-1,resolution=1920x1080,frame-rate=60");
+    defer allocator.free(explicit.id.?);
+    try std.testing.expectEqualStrings("DP-1", explicit.id.?);
+    try std.testing.expectEqual(@as(u32, 1920), explicit.resolution.?.width);
+    try std.testing.expectEqual(@as(u32, 1080), explicit.resolution.?.height);
+    try std.testing.expectEqual(@as(u32, 60), explicit.frame_rate.?);
+
+    const shorthand = try parseOutputConfigString(allocator, " HDMI-A-1 ");
+    defer allocator.free(shorthand.id.?);
+    try std.testing.expectEqualStrings("HDMI-A-1", shorthand.id.?);
+    try std.testing.expectEqual(@as(?Resolution, null), shorthand.resolution);
+    try std.testing.expectEqual(@as(?u32, null), shorthand.frame_rate);
+}
+
+test "parseOutputConfigString rejects ambiguous and duplicate fields" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectError(error.OutputIdRequired, parseOutputConfigString(allocator, ""));
+    try std.testing.expectError(error.OutputIdRequired, parseOutputConfigString(allocator, "resolution=1920x1080"));
+    try std.testing.expectError(error.InvalidOutputConfig, parseOutputConfigString(allocator, "DP-1,HDMI-A-1"));
+    try std.testing.expectError(error.DuplicateOutputId, parseOutputConfigString(allocator, "id=DP-1,id=HDMI-A-1"));
+    try std.testing.expectError(error.DuplicateResolution, parseOutputConfigString(allocator, "id=DP-1,resolution=1920x1080,resolution=1280x720"));
+    try std.testing.expectError(error.DuplicateFrameRate, parseOutputConfigString(allocator, "id=DP-1,frame-rate=60,frame-rate=30"));
+    try std.testing.expectError(error.FrameRateMustBePositive, parseOutputConfigString(allocator, "id=DP-1,frame-rate=0"));
+    try std.testing.expectError(error.ResolutionMustBePositive, parseOutputConfigString(allocator, "id=DP-1,resolution=0x1080"));
+}
+
+test "applyOutputConfigDefaults only fills missing values" {
+    var config: OutputConfig = .{
+        .id = "DP-1",
+        .resolution = .{ .width = 1280, .height = 720 },
+        .frame_rate = null,
+    };
+
+    applyOutputConfigDefaults(&config, .{ .width = 1920, .height = 1080 }, 30);
+    try std.testing.expectEqual(@as(u32, 1280), config.resolution.?.width);
+    try std.testing.expectEqual(@as(u32, 720), config.resolution.?.height);
+    try std.testing.expectEqual(@as(u32, 30), config.frame_rate.?);
+}
+
+test "findDuplicateOutputConfig detects repeated output ids" {
+    const configs = [_]OutputConfig{
+        .{ .id = "DP-1" },
+        .{ .id = "HDMI-A-1" },
+        .{ .id = "DP-1" },
+    };
+    try std.testing.expectEqualStrings("DP-1", findDuplicateOutputConfig(&configs).?);
+
+    const unique_configs = [_]OutputConfig{
+        .{ .id = "DP-1" },
+        .{ .id = "HDMI-A-1" },
+    };
+    try std.testing.expectEqual(@as(?[]const u8, null), findDuplicateOutputConfig(&unique_configs));
+}
 
 pub fn printUsage() !void {
     var buffer: [64]u8 = undefined;
@@ -609,9 +840,13 @@ pub fn printUsage() !void {
         \\  SHADER_FILE       The path to the shader file to render. This should be a GLSL
         \\                    fragment shader that is compatible with the Shadertoy API.
         \\Options:
-        \\  --output <name>    Set the output to render the shader on (default: first available output)
-        \\  --frame-rate <fps> Set a custom frame rate for the shader (default: vsync)
-        \\  --resolution <WxH> Set the resolution of the shader (default: output resolution)
+        \\  --output <config>  Configure individual outputs. Can be specified multiple times.
+        \\                     Format: "id=<name>[,resolution=<WxH>][,frame-rate=<fps>]"
+        \\                     Compatibility shorthand: --output <name>
+        \\                     Example: --output "id=DP-1,resolution=1920x1080,frame-rate=60"
+        \\                     If not specified, renders on all available outputs.
+        \\  --frame-rate <fps> Set a default frame rate for selected outputs (default: native)
+        \\  --resolution <WxH> Set a default positive logical resolution for selected outputs
         \\  --help             Show this help message
         \\
     );
@@ -621,6 +856,75 @@ fn handleArgsError(err: zig_args.Error) !void {
     std.log.err("failed parsing command line arguments: {f}", .{err});
     try printUsage();
 }
+
+const FramePacing = struct {
+    callback: *wl.Callback,
+    target_frame_interval_ns: ?u64 = null,
+    next_frame_time: u64 = 0,
+};
+
+const Paper = struct {
+    /// The allocator used for this paper's resources.
+    allocator: Allocator,
+    /// The Wayland surface associated with this paper.
+    surface: *WlrSurface,
+    /// The shader program being rendered.
+    shader: *Shader,
+    /// Global shader attributes (e.g. time, resolution).
+    global_attributes: GlobalAttributes,
+    /// Whether a new frame should be rendered. True when a frame callback is received (vsync).
+    render_frame: bool = false,
+    /// Frame callback plus optional frame-rate cap for this surface.
+    frame_pacing: FramePacing,
+
+    pub fn create(
+        allocator: Allocator,
+        gl_display: *GLDisplay,
+        compositor: *wl.Compositor,
+        layer_shell: *zwlr.LayerShellV1,
+        fractional_scale_manager: ?*wp.FractionalScaleManagerV1,
+        viewporter: ?*wp.Viewporter,
+        output: *Output,
+        custom_resolution: ?Resolution,
+        shader_source: []const u8,
+        target_frame_rate: ?u32,
+    ) !*Paper {
+        const self = try allocator.create(Paper);
+        errdefer allocator.destroy(self);
+
+        self.allocator = allocator;
+
+        self.surface = try WlrSurface.createEgl(allocator, gl_display, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution);
+        errdefer self.surface.deinit();
+
+        try self.surface.makeCurrent();
+
+        self.global_attributes = GlobalAttributes.init();
+        errdefer self.global_attributes.deinit();
+        self.global_attributes.bind();
+
+        self.shader = try Shader.create(allocator, shader_source, .{ .width = self.surface.width, .height = self.surface.height }, target_frame_rate orelse output.refresh_rate);
+        errdefer self.shader.destroy(allocator);
+
+        self.render_frame = false;
+        self.frame_pacing = .{
+            .callback = try self.surface.requestAnimationFrame(),
+            .target_frame_interval_ns = if (target_frame_rate) |fps| @as(u64, std.time.ns_per_s) / fps else null,
+        };
+        self.frame_pacing.callback.setListener(*bool, setRenderFrame, &self.render_frame);
+
+        return self;
+    }
+
+    pub fn destroy(self: *Paper) void {
+        self.surface.makeCurrent() catch {};
+        self.shader.destroy(self.allocator);
+        self.global_attributes.deinit();
+        self.frame_pacing.callback.destroy();
+        self.surface.deinit();
+        self.allocator.destroy(self);
+    }
+};
 
 pub fn main() !u8 {
     const allocator = std.heap.c_allocator;
@@ -649,33 +953,21 @@ pub fn main() !u8 {
     }
     const shader_path = options.positionals[0];
 
-    var custom_resolution: ?Resolution = null;
-    if (options.options.resolution) |resolution| {
-        var it = std.mem.splitScalar(u8, resolution, 'x');
-        const width_str = it.next() orelse {
-            std.log.err("resolution must be in the format WxH, got: {s}", .{resolution});
-            return 1;
-        };
-        const height_str = it.next() orelse {
-            std.log.err("resolution must be in the format WxH, got: {s}", .{resolution});
-            return 1;
-        };
-        if (it.next() != null) {
-            std.log.err("resolution must be in the format WxH, got: {s}", .{resolution});
+    const default_resolution = if (options.options.resolution) |resolution|
+        parseResolution(resolution) catch |err| {
+            std.log.err("invalid --resolution '{s}': {}", .{ resolution, err });
             return 1;
         }
+    else
+        null;
 
-        custom_resolution = .{
-            .width = std.fmt.parseInt(u32, width_str, 10) catch |err| {
-                std.log.err("failed to parse width from resolution: {s} ({})", .{ width_str, err });
-                return 1;
-            },
-            .height = std.fmt.parseInt(u32, height_str, 10) catch |err| {
-                std.log.err("failed to parse height from resolution: {s} ({})", .{ height_str, err });
-                return 1;
-            },
-        };
-    }
+    const default_frame_rate = if (options.options.@"frame-rate") |frame_rate| frame_rate: {
+        if (frame_rate == 0) {
+            std.log.err("frame rate must be positive, got 0", .{});
+            return 1;
+        }
+        break :frame_rate frame_rate;
+    } else null;
 
     // TODO: Investigate all try uses below and make them return a user-friendly error.
 
@@ -699,42 +991,6 @@ pub fn main() !u8 {
     const compositor = registry_listener.compositor orelse return error.NoWlCompositor;
     const layer_shell = registry_listener.layer_shell_v1 orelse return error.NoWlrLayerShellV1;
 
-    // TODO: Support multiple outputs at once.
-    const output = output: {
-        if (registry_listener.outputs.items.len == 0) {
-            std.log.err("no outputs available, cannot render", .{});
-            return 1;
-        }
-
-        if (options.options.output == null)
-            break :output registry_listener.outputs.items[0];
-
-        const wanted_output_name = options.options.output.?;
-        for (registry_listener.outputs.items) |output| {
-            try output.wait(display);
-            if (std.mem.eql(u8, output.name, wanted_output_name))
-                break :output output;
-        }
-
-        std.log.err("output with name {s} not found", .{wanted_output_name});
-        std.log.info("available outputs:", .{});
-        for (registry_listener.outputs.items) |output| {
-            std.log.info("- {s} ({}x{}, {}Hz)", .{
-                output.name,
-                output.width,
-                output.height,
-                @round(@as(f32, @floatFromInt(output.refresh_rate)) / 1000),
-            });
-        }
-
-        return 1;
-    };
-
-    const surface = try WlrSurface.createEgl(allocator, display, compositor, layer_shell, registry_listener.fractional_scale_manager_v1, registry_listener.viewporter_v1, output, custom_resolution);
-    defer surface.deinit();
-
-    try surface.makeCurrent();
-
     const shader_source = std.fs.cwd().readFileAlloc(allocator, shader_path, std.math.maxInt(usize)) catch |err| switch (err) {
         error.FileNotFound => {
             std.log.err("shader file not found: {s}", .{shader_path});
@@ -747,74 +1003,189 @@ pub fn main() !u8 {
     };
     defer allocator.free(shader_source);
 
-    var using_custom_frame_rate = false;
-    var target_frame_rate = output.refresh_rate;
-    if (options.options.@"frame-rate") |frame_rate| {
-        using_custom_frame_rate = true;
-        if (frame_rate <= 0) {
-            std.log.err("frame rate must be positive, got {}", .{frame_rate});
-            return 1;
+    defer {
+        for (global_output_configs.items) |output_config| {
+            if (output_config.id) |id| allocator.free(id);
         }
-        target_frame_rate = @intCast(frame_rate);
+        global_output_configs.deinit(allocator);
     }
 
-    const expected_frame_time_ns = @as(u64, std.time.ns_per_s) / target_frame_rate;
+    if (global_output_configs.items.len == 0) {
+        // No specific outputs requested, use all available outputs with the
+        // global defaults from legacy options, if any.
+        for (registry_listener.outputs.items) |output| {
+            try output.wait(display); // Ensure output is ready
+            try global_output_configs.append(allocator, .{
+                .id = try allocator.dupe(u8, output.name.?),
+                .resolution = default_resolution,
+                .frame_rate = default_frame_rate,
+            });
+        }
+    } else {
+        for (global_output_configs.items) |*output_config| {
+            applyOutputConfigDefaults(output_config, default_resolution, default_frame_rate);
+        }
+    }
 
-    var global_attributes = GlobalAttributes.init();
-    defer global_attributes.deinit();
-    global_attributes.bind();
+    if (global_output_configs.items.len == 0) {
+        std.log.err("no outputs configured, cannot render", .{});
+        return 1;
+    }
 
-    const shader = try Shader.create(allocator, shader_source, .{ .width = surface.width, .height = surface.height }, target_frame_rate);
-    defer shader.destroy(allocator);
+    if (findDuplicateOutputConfig(global_output_configs.items)) |id| {
+        std.log.err("duplicate output id in --output config: {s}", .{id});
+        return 1;
+    }
 
-    var next_frame_time: u64 = 0;
-    var render_frame: bool = false;
+    var gl_display = try GLDisplay.init(display);
+    defer gl_display.deinit();
+
+    var papers = std.ArrayListUnmanaged(*Paper){};
+    defer {
+        for (papers.items) |paper| paper.destroy();
+        papers.deinit(allocator);
+    }
+
+    for (global_output_configs.items) |output_config| {
+        const output_id = output_config.id.?;
+        // Find the actual output based on the ID
+        var selected_output: ?*Output = null;
+        for (registry_listener.outputs.items) |output| {
+            try output.wait(display); // Ensure output is ready
+            if (std.mem.eql(u8, output.name.?, output_id)) {
+                selected_output = output;
+                break;
+            }
+        }
+
+        const output = selected_output orelse {
+            std.log.err("output with name '{s}' not found", .{output_id});
+            std.log.info("available outputs:", .{});
+            for (registry_listener.outputs.items) |out| {
+                std.log.info("- {s} ({}x{}, {}Hz)", .{
+                    out.name orelse "unknown",
+                    out.width,
+                    out.height,
+                    out.refresh_rate,
+                });
+            }
+            return 1;
+        };
+
+        const target_resolution = output_config.resolution;
+
+        const paper = try Paper.create(
+            allocator,
+            &gl_display,
+            compositor,
+            layer_shell,
+            registry_listener.fractional_scale_manager_v1,
+            registry_listener.viewporter_v1,
+            output,
+            target_resolution,
+            shader_source,
+            output_config.frame_rate,
+        );
+        try papers.append(allocator, paper);
+        if (output_config.frame_rate) |fps| {
+            std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: {})", .{
+                output.name.?,
+                paper.surface.destination_width,
+                paper.surface.destination_height,
+                fps,
+            });
+        } else {
+            std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: native)", .{
+                output.name.?,
+                paper.surface.destination_width,
+                paper.surface.destination_height,
+            });
+        }
+    }
+
+    // Initial roundtrip to receive the first configure event from the compositor.
+    // We must acknowledge this event before we can attach any buffers (render).
+    if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
+
+    for (papers.items) |paper| {
+        _ = try paper.surface.handleConfiguration();
+    }
 
     while (true) {
-        if (try surface.synchronizeOutputChanges(display)) {
-            shader.resolution = .{ .width = surface.width, .height = surface.height };
-            gl.viewport(0, 0, surface.width, surface.height);
-        }
+        // Always dispatch pending events first.
+        const dispatched = display.dispatchPending();
+        if (dispatched != .SUCCESS) return error.DispatchFailed;
 
         const now = try std.time.Instant.now();
         const now_ns = now.since(std.mem.zeroes(std.time.Instant));
 
-        // For the first frame, we want to render immediately.
-        if (shader.frame > 0) {
-            if (using_custom_frame_rate) {
-                // NOTE: dispatchPending because we don't want to block on a
-                //       non-existent frame event.
-                if (display.dispatchPending() != .SUCCESS) return error.DispatchFailed;
+        var smallest_frame_cap_sleep_time: ?u64 = null;
+        var rendered_count: usize = 0;
 
-                if (now_ns < next_frame_time) {
-                    // If we are ahead of the target frame rate, sleep until the next frame time.
-                    std.posix.nanosleep(0, next_frame_time - now_ns);
-                    continue;
+        for (papers.items) |paper| {
+            var should_render_this_frame = false;
+            if (paper.shader.frame == 0 or paper.render_frame) {
+                if (paper.frame_pacing.target_frame_interval_ns) |frame_interval_ns| {
+                    if (paper.shader.frame == 0 or now_ns >= paper.frame_pacing.next_frame_time) {
+                        should_render_this_frame = true;
+                        paper.render_frame = false;
+                        paper.frame_pacing.next_frame_time = now_ns + frame_interval_ns;
+                    } else {
+                        const sleep_time = paper.frame_pacing.next_frame_time - now_ns;
+                        if (smallest_frame_cap_sleep_time == null or sleep_time < smallest_frame_cap_sleep_time.?) {
+                            smallest_frame_cap_sleep_time = sleep_time;
+                        }
+                    }
+                } else {
+                    should_render_this_frame = true;
+                    paper.render_frame = false;
                 }
-            } else {
-                if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
+            }
 
-                if (!render_frame) continue;
-                render_frame = false;
+            if (!should_render_this_frame) continue;
+
+            // We are going to render
+            rendered_count += 1;
+
+            try paper.surface.makeCurrent();
+
+            _ = try paper.surface.handleConfiguration();
+            // Update viewport and resolution uniforms every frame because each output may have
+            // a different configured size.
+            paper.shader.resolution = .{ .width = paper.surface.width, .height = paper.surface.height };
+            gl.viewport(0, 0, paper.surface.width, paper.surface.height);
+
+            paper.global_attributes.bind();
+            try paper.shader.render();
+
+            paper.frame_pacing.callback.destroy();
+            paper.frame_pacing.callback = try paper.surface.requestAnimationFrame();
+            paper.frame_pacing.callback.setListener(*bool, setRenderFrame, &paper.render_frame);
+
+            try paper.surface.swapBuffers();
+        }
+
+        if (rendered_count == 0) {
+            // If nothing was rendered, wait for events or the next capped frame time.
+            if (smallest_frame_cap_sleep_time) |sleep_time| {
+                var fds = [_]std.posix.pollfd{.{
+                    .fd = display.getFd(),
+                    .events = std.posix.POLL.IN,
+                    .revents = 0,
+                }};
+                _ = std.posix.poll(&fds, @intCast(sleep_time / 1_000_000)) catch {};
+            } else {
+                // If no custom frame rates, and nothing rendered, just block for events.
+                if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
             }
         }
-
-        if (!using_custom_frame_rate) {
-            const callback = try surface.requestAnimationFrame();
-            callback.setListener(*bool, setRenderFrame, &render_frame);
-        }
-
-        next_frame_time = now_ns + expected_frame_time_ns;
-
-        try shader.render();
-        try surface.swapBuffers();
     }
 
     return 0;
 }
 
 fn setRenderFrame(callback: *wl.Callback, event: wl.Callback.Event, render_frame: *bool) void {
-    defer callback.destroy();
+    _ = callback;
     switch (event) {
         .done => {
             render_frame.* = true;

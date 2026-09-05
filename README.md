@@ -45,10 +45,49 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
 > Currently, only shaders that don't use any channels are supported. This is
 > being worked on.
 
-Options:
-- `--output <id>`: Render to this Wayland output index (default: `0`)
-- `--frame-rate <fps>`: Limit the frame rate of the shader (default: output refresh rate)
-- `--resolution <WxH>`: Limit the resolution the shader is rendered at (default: output native resolution)
+### Options
+
+- `--output <config>`: Configure individual outputs. Can be specified multiple times.
+
+  **Format:** `id=<name>[,resolution=<WxH>][,frame-rate=<fps>]`
+
+  For compatibility with older versions, `--output <name>` is also accepted as shorthand for `--output "id=<name>"`.
+
+  **Parameters:**
+  - `id`: The name of the output (e.g., `DP-1`, `HDMI-A-1`). Use your compositor's output list command to find yours (e.g., `niri msg outputs`, `swaymsg -t get_outputs`, `hyprctl monitors`).
+  - `resolution`: Force a specific positive logical resolution (e.g., `1920x1080`).
+  - `frame-rate`: Limit the frame rate (e.g., `30`, `60`). Defaults to compositor frame callbacks.
+
+- `--frame-rate <fps>`: Set the default frame rate for selected outputs. Per-output `frame-rate` values override this.
+- `--resolution <WxH>`: Set the default positive logical resolution for selected outputs. Per-output `resolution` values override this.
+
+### Configuration Examples
+
+**1. Performance Mode (Recommended for 4K)**
+Render at half resolution (1080p on 4K) to save GPU power, but keep the window fullscreen.
+```console
+$ papertoy shader.glsl --output "id=HDMI-A-1,resolution=1920x1080"
+```
+
+**2. Multi-Monitor Setup**
+Configure a high-refresh main monitor and a slower secondary monitor.
+```console
+$ papertoy shader.glsl \
+    --output "id=DP-1,frame-rate=144" \
+    --output "id=HDMI-A-1,resolution=1920x1080,frame-rate=30"
+```
+
+**3. Custom Resolution**
+Force a specific aspect ratio or size.
+```console
+$ papertoy shader.glsl --output "id=DP-1,resolution=800x600"
+```
+
+**4. Compatibility Options**
+Older single-output invocations still work.
+```console
+$ papertoy shader.glsl --output DP-1 --frame-rate 30 --resolution 1920x1080
+```
 
 ## Build
 
